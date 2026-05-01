@@ -21,7 +21,7 @@ import {
   Image as ImageIcon, 
   Loader2, 
   X, 
-  Heart, 
+  PawPrint, 
   Upload, 
   ChevronRight, 
   Info, 
@@ -70,6 +70,8 @@ export default function App() {
         try {
           await document.fonts.load('600 12px Fredoka');
           await document.fonts.load('400 12px Fredoka');
+          await document.fonts.load('400 12px Cinzel');
+          await document.fonts.load('700 12px Cinzel');
           await document.fonts.ready;
           requestAnimationFrame(() => {
             setTimeout(() => setIsFontReady(true), 150);
@@ -283,7 +285,6 @@ export default function App() {
     .font-serif-kr { font-family: 'Noto Serif KR', serif; }
     .font-montserrat { font-family: 'Montserrat', sans-serif; }
     
-    /* 고퀄리티 시네마틱 애니메이션 */
     @keyframes cinematicEntrance {
       0% { opacity: 0; filter: blur(30px); transform: scale(1.15); }
       100% { opacity: 1; filter: blur(0); transform: scale(1); }
@@ -350,13 +351,12 @@ export default function App() {
         onClick={() => isFontReady && setView('auth')}
       >
         <style>{globalStyles}</style>
-        {/* 시네마틱 레이어: 필름 그레인 & 비네팅 */}
         <div className="noise-bg" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.8)_100%)] pointer-events-none" />
 
         {isFontReady && (
           <div className="flex flex-col items-center text-center relative z-10">
-            <h1 className="text-8xl md:text-[11rem] text-white font-cute tracking-[-0.07em] font-semibold drop-shadow-[0_0_30px_rgba(255,255,255,0.2)] animate-cinematic-text animate-shimmer">
+            <h1 className="text-6xl md:text-8xl text-white font-cute tracking-[-0.07em] font-semibold drop-shadow-[0_0_30px_rgba(255,255,255,0.2)] animate-cinematic-text animate-shimmer">
               GGURUK
             </h1>
             <div className="flex justify-center w-full px-4 overflow-hidden">
@@ -378,24 +378,17 @@ export default function App() {
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 sm:p-8">
         <style>{globalStyles}</style>
         <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up">
-          <div className="w-full md:w-1/2 p-12 relative overflow-hidden flex flex-col justify-between min-h-[400px]">
+          <div className="w-full md:w-28 p-6 relative overflow-hidden flex flex-col justify-center items-start bg-[#0d0d0d]">
             <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-zinc-800 to-black z-0"></div>
             <div className="absolute -top-32 -left-32 w-[30rem] h-[30rem] bg-white/5 rounded-full blur-[120px] z-0"></div>
-            <div className="relative z-10">
-              <Heart className="text-white w-10 h-10 mb-8" strokeWidth={1} />
-              <h2 className="text-4xl md:text-5xl text-white font-serif-kr font-light tracking-wide leading-tight drop-shadow-lg">
-                기억하고 싶은<br/>
-                <span className="text-zinc-400 font-serif-kr font-medium italic">모든 순간들</span>
-              </h2>
-            </div>
-            <div className="relative z-10 text-zinc-500 text-sm tracking-[0.3em] uppercase mt-12 md:mt-0 font-cinzel font-semibold">
-              Private Family Gallery
+            <div className="relative z-10 px-2">
+              <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
             </div>
           </div>
 
-          <div className="w-full md:w-1/2 p-8 md:p-14 flex flex-col justify-center bg-[#0a0a0a] backdrop-blur-md">
-            <h3 className="text-3xl text-white font-cinzel font-semibold mb-4 tracking-wider">
-              {isLoginMode ? 'Enter Album' : 'Create Album'}
+          <div className="w-full md:flex-1 p-8 md:p-14 flex flex-col justify-center bg-[#0a0a0a] backdrop-blur-md">
+            <h3 className="text-4xl text-white font-cute font-bold mb-6 tracking-tighter uppercase">
+              {isLoginMode ? 'GGURUK in' : 'GGURUK create'}
             </h3>
             <form onSubmit={handleAuthSubmit} className="space-y-6">
               <div>
@@ -435,10 +428,10 @@ export default function App() {
               <button 
                 type="submit" 
                 disabled={isAuthLoading || !isAuthReady}
-                className="w-full bg-white text-black font-serif-kr font-semibold rounded-xl px-4 py-4 hover:bg-zinc-200 transition-all flex items-center justify-center space-x-2 mt-6 disabled:opacity-50 shadow-[0_0_20px_rgba(255,255,255,0.1)] text-lg"
+                className="w-full bg-white text-black font-cinzel font-bold rounded-xl px-4 py-4 hover:bg-zinc-200 transition-all flex items-center justify-center space-x-2 mt-6 disabled:opacity-50 shadow-[0_0_20px_rgba(255,255,255,0.1)] text-lg tracking-widest uppercase"
               >
                 {isAuthLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
-                <span>{isLoginMode ? '앨범 열기' : '새 앨범 만들기'}</span>
+                <span>{isLoginMode ? 'ENTER' : 'CREATE'}</span>
                 {!isAuthLoading && <ChevronRight className="w-5 h-5 opacity-50" />}
               </button>
             </form>
