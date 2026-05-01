@@ -64,6 +64,9 @@ export default function App() {
 
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
+  
+  // 로그아웃(나가기) 모달 상태
+  const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = useState(false);
 
   // PWA 설치 프롬프트 이벤트를 저장하기 위한 state
   const [deferredPrompt, setDeferredPrompt] = useState(null);
@@ -227,7 +230,9 @@ export default function App() {
 
   const handleLogout = () => {
     setActiveAlbum(null);
+    setIsLoginMode(true); 
     setView('auth');
+    setIsLogoutConfirmOpen(false);
   };
 
   const compressImage = (file, maxWidth = 1000, maxHeight = 1000, quality = 0.7) => {
@@ -348,7 +353,6 @@ export default function App() {
     }
     .animate-slide-up { animation: slideUpFade 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
-    /* 정중앙에서 부드럽게 떠오르는 시네마틱 토스트 애니메이션 */
     @keyframes cinematicToast {
       0% { opacity: 0; transform: translate(-50%, 40px) scale(0.9); filter: blur(8px); }
       100% { opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0); }
@@ -417,25 +421,25 @@ export default function App() {
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 sm:p-8 relative">
         <style>{globalStyles}</style>
         
-        {/* 모든 카드 요소들을 하나로 묶는 최상단 wrapper (Install 버튼이 기준점을 공유하도록) */}
-        <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up relative">
+        {/* 모든 요소를 감싸는 카드 컨테이너 */}
+        <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up mt-8 md:mt-0 relative">
           
-          {/* 앱 설치 버튼: 카드 우측 상단 배치, 발바닥 아이콘과 높이 완벽 일치 */}
-          <div className="absolute top-6 right-6 md:right-10 z-50 flex items-center h-8">
+          {/* 앱 설치 버튼 (카드 내부의 absolute로 변경하여, 패딩값 top-6/md:top-10과 완벽하게 일치하게 조정) */}
+          <div className="absolute top-6 right-6 md:top-10 md:right-10 z-50 flex items-center h-10">
             <button 
               onClick={handleInstallClick}
-              className="flex items-center space-x-2 bg-zinc-900/80 hover:bg-white hover:text-black border border-zinc-700 text-zinc-300 px-5 py-2 rounded-full transition-all duration-300 shadow-lg backdrop-blur-md group"
+              className="flex items-center space-x-2 bg-zinc-900/80 hover:bg-white hover:text-black border border-zinc-700 text-zinc-300 px-5 py-2.5 rounded-full transition-all duration-300 shadow-lg backdrop-blur-md group"
             >
               <Download className="w-4 h-4 group-hover:text-black transition-colors" />
               <span className="font-montserrat font-medium text-sm tracking-widest uppercase">Install</span>
             </button>
           </div>
 
-          {/* 좌측 패널: justify-start로 변경하여 상단 발바닥 아이콘이 상하 기준점이 되도록 고정 */}
-          <div className="w-full md:w-28 p-6 relative overflow-hidden flex flex-col justify-start items-start md:items-center bg-[#0d0d0d]">
+          <div className="w-full md:w-28 p-6 md:p-10 relative overflow-hidden flex flex-col justify-start items-start md:items-center bg-[#0d0d0d]">
             <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-zinc-800 to-black z-0"></div>
             <div className="absolute -top-32 -left-32 w-[30rem] h-[30rem] bg-white/5 rounded-full blur-[120px] z-0"></div>
-            <div className="relative z-10 px-2 h-8 flex items-center">
+            {/* 좌측 패널 패딩이 top-6(모바일), md:top-10(데스크탑)이므로 인스톨 버튼과 Y축 완벽 일치 */}
+            <div className="relative z-10 px-2 h-10 flex items-center">
               <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
             </div>
           </div>
@@ -512,20 +516,17 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-white/30 relative">
       <style>{globalStyles}</style>
-      {/* 토스트 애니메이션 충돌 픽스: -translate-x-1/2 클래스를 제거하고, 
-        animate-cinematic-toast 키프레임 내부에서 X축 정중앙(-50%)을 자체적으로 계산하여 부드럽게 상승하게 만듦 
-      */}
+      
       {toastMessage && (
         <div className="fixed bottom-10 left-1/2 z-50 bg-[#111111]/95 backdrop-blur-xl text-white px-10 py-4 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] border border-white/10 flex items-center space-x-3 animate-cinematic-toast font-serif-kr font-light tracking-wide whitespace-nowrap min-w-max">
           <Info className="w-4 h-4 text-zinc-400 flex-shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}
+      
       <header className="sticky top-0 z-40 bg-black/80 backdrop-blur-xl border-b border-white/10 px-6 py-5 flex justify-between items-center transition-all">
         <div className="flex items-center space-x-4">
-          <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center">
-             <Camera className="w-5 h-5 text-black" strokeWidth={1.5} />
-          </div>
+          <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
           <h1 className="text-2xl font-cute font-bold tracking-tighter uppercase hidden sm:block">GGURUK</h1>
         </div>
         <div className="flex items-center space-x-6">
@@ -533,7 +534,7 @@ export default function App() {
             <Lock className="w-3 h-3 text-white" />
             <span>ALBUM : <strong className="text-white font-medium">{activeAlbum}</strong></span>
           </span>
-          <button onClick={handleLogout} className="flex items-center space-x-2 text-zinc-400 hover:text-white transition-colors uppercase text-xs">
+          <button onClick={() => setIsLogoutConfirmOpen(true)} className="flex items-center space-x-2 text-zinc-400 hover:text-white transition-colors uppercase text-xs">
             <span className="hidden sm:inline">Close</span>
             <LogOut className="w-4 h-4" />
           </button>
@@ -542,7 +543,7 @@ export default function App() {
       <main className="max-w-[1600px] mx-auto px-6 py-12">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 space-y-6 md:space-y-0">
           <div>
-            <h2 className="text-4xl md:text-5xl font-serif-kr font-medium mb-4 tracking-wide">꾸루 아카이브</h2>
+            <h2 className="text-4xl md:text-5xl font-cute font-bold mb-4 tracking-tighter uppercase">GGURUK</h2>
             <p className="text-zinc-400 font-serif-kr font-light text-lg">우리가 함께한 반짝이는 순간들</p>
           </div>
           <div className="flex items-center space-x-4 w-full md:w-auto">
@@ -586,6 +587,31 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* 로그아웃(나가기) 확인 팝업 모달 */}
+      {isLogoutConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl text-center max-w-sm w-full mx-4 animate-[slideUpFade_0.3s_ease-out]">
+            <PawPrint className="w-8 h-8 text-zinc-500 mx-auto mb-4" strokeWidth={1.5} />
+            <h3 className="text-xl text-white font-serif-kr font-light mb-8 tracking-wide">정말로 앨범에서<br/>나가시겠습니까?</h3>
+            <div className="flex justify-center space-x-3">
+              <button
+                onClick={() => setIsLogoutConfirmOpen(false)}
+                className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-sm tracking-widest uppercase"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleLogout}
+                className="flex-1 px-4 py-3 rounded-xl bg-white text-black font-montserrat font-bold hover:bg-zinc-200 transition-colors text-sm tracking-widest uppercase"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedPhoto && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/98 backdrop-blur-2xl" onClick={() => setSelectedPhoto(null)}>
           <div className="absolute top-0 right-0 p-6">
