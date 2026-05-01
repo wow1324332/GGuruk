@@ -26,7 +26,8 @@ import {
   ChevronRight, 
   Info, 
   Lock, 
-  Key 
+  Key,
+  Download
 } from 'lucide-react';
 
 // --- 회원님 전용 외부 Firebase 환경 변수 연동 ---
@@ -63,6 +64,23 @@ export default function App() {
 
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
+
+  // PWA 설치 프롬프트 이벤트를 저장하기 위한 state
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+
+  useEffect(() => {
+    // PWA 설치 이벤트 리스너 등록
+    const handleBeforeInstallPrompt = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
 
   useEffect(() => {
     const loadFonts = async () => {
@@ -135,6 +153,18 @@ export default function App() {
     setTimeout(() => setToastMessage(''), 3000);
   };
 
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) {
+      showToast('앱 설치를 지원하지 않는 브라우저이거나 이미 설치되었습니다.');
+      return;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+    }
+  };
+
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     if (!isAuthReady || !user) {
@@ -184,7 +214,7 @@ export default function App() {
           setAlbumCode('');
           setAlbumPassword('');
           setView('main');
-          showToast(`'${code}' 앨범이 생성되었습니다.`);
+          showToast(`앨범이 생성되었어요`);
         }
       }
     } catch (error) {
@@ -318,6 +348,15 @@ export default function App() {
     }
     .animate-slide-up { animation: slideUpFade 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
+    /* 정중앙에서 부드럽게 떠오르는 시네마틱 토스트 애니메이션 */
+    @keyframes cinematicToast {
+      0% { opacity: 0; transform: translate(-50%, 40px) scale(0.9); filter: blur(8px); }
+      100% { opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0); }
+    }
+    .animate-cinematic-toast {
+      animation: cinematicToast 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
     .masonry-container {
       column-count: 2;
       column-gap: 1.5rem;
@@ -375,13 +414,28 @@ export default function App() {
 
   if (view === 'auth') {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 sm:p-8">
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 sm:p-8 relative">
         <style>{globalStyles}</style>
-        <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up">
-          <div className="w-full md:w-28 p-6 relative overflow-hidden flex flex-col justify-center items-start bg-[#0d0d0d]">
+        
+        {/* 모든 카드 요소들을 하나로 묶는 최상단 wrapper (Install 버튼이 기준점을 공유하도록) */}
+        <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up relative">
+          
+          {/* 앱 설치 버튼: 카드 우측 상단 배치, 발바닥 아이콘과 높이 완벽 일치 */}
+          <div className="absolute top-6 right-6 md:right-10 z-50 flex items-center h-8">
+            <button 
+              onClick={handleInstallClick}
+              className="flex items-center space-x-2 bg-zinc-900/80 hover:bg-white hover:text-black border border-zinc-700 text-zinc-300 px-5 py-2 rounded-full transition-all duration-300 shadow-lg backdrop-blur-md group"
+            >
+              <Download className="w-4 h-4 group-hover:text-black transition-colors" />
+              <span className="font-montserrat font-medium text-sm tracking-widest uppercase">Install</span>
+            </button>
+          </div>
+
+          {/* 좌측 패널: justify-start로 변경하여 상단 발바닥 아이콘이 상하 기준점이 되도록 고정 */}
+          <div className="w-full md:w-28 p-6 relative overflow-hidden flex flex-col justify-start items-start md:items-center bg-[#0d0d0d]">
             <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-zinc-800 to-black z-0"></div>
             <div className="absolute -top-32 -left-32 w-[30rem] h-[30rem] bg-white/5 rounded-full blur-[120px] z-0"></div>
-            <div className="relative z-10 px-2">
+            <div className="relative z-10 px-2 h-8 flex items-center">
               <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
             </div>
           </div>
@@ -428,7 +482,7 @@ export default function App() {
               <button 
                 type="submit" 
                 disabled={isAuthLoading || !isAuthReady}
-                className="w-full bg-white text-black font-cinzel font-bold rounded-xl px-4 py-4 hover:bg-zinc-200 transition-all flex items-center justify-center space-x-2 mt-6 disabled:opacity-50 shadow-[0_0_20px_rgba(255,255,255,0.1)] text-lg tracking-widest uppercase"
+                className="w-full bg-white text-black font-cute font-bold rounded-xl px-4 py-4 hover:bg-zinc-200 transition-all flex items-center justify-center space-x-2 mt-6 disabled:opacity-50 shadow-[0_0_20px_rgba(255,255,255,0.1)] text-lg tracking-widest uppercase"
               >
                 {isAuthLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
                 <span>{isLoginMode ? 'ENTER' : 'CREATE'}</span>
@@ -458,9 +512,12 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-white/30 relative">
       <style>{globalStyles}</style>
+      {/* 토스트 애니메이션 충돌 픽스: -translate-x-1/2 클래스를 제거하고, 
+        animate-cinematic-toast 키프레임 내부에서 X축 정중앙(-50%)을 자체적으로 계산하여 부드럽게 상승하게 만듦 
+      */}
       {toastMessage && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-white text-black px-6 py-3 rounded-full shadow-2xl flex items-center space-x-2 animate-[fadeUpItem_0.3s_ease-out] font-serif-kr font-medium">
-          <Info className="w-4 h-4" />
+        <div className="fixed bottom-10 left-1/2 z-50 bg-[#111111]/95 backdrop-blur-xl text-white px-10 py-4 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] border border-white/10 flex items-center space-x-3 animate-cinematic-toast font-serif-kr font-light tracking-wide whitespace-nowrap min-w-max">
+          <Info className="w-4 h-4 text-zinc-400 flex-shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}
