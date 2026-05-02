@@ -14,7 +14,8 @@ import {
   doc, 
   getDoc, 
   setDoc,
-  updateDoc
+  updateDoc,
+  waitForPendingWrites
 } from 'firebase/firestore';
 import { 
   getStorage, 
@@ -75,6 +76,9 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [activeAlbum, setActiveAlbum] = useState(null);
+  
+  // 로그인 시 로딩 딜레이 방지용 시네마틱 트랜지션 상태
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -95,16 +99,16 @@ export default function App() {
   const [selectedFolder, setSelectedFolder] = useState(null);
   const [groupModalState, setGroupModalState] = useState(null);
   const [newFolderName, setNewFolderName] = useState('');
-  const [targetActionType, setTargetActionType] = useState(null); // 'reorder' | 'group' | 'remove' | null
+  const [targetActionType, setTargetActionType] = useState(null); 
 
   // 뷰어용 앨범 이동 모달 상태
   const [viewerMoveModalOpen, setViewerMoveModalOpen] = useState(false);
 
-  // 그리드 칼럼 상태 (모바일 디폴트 2)
+  // 그리드 칼럼 상태 및 참조
   const [gridColumns, setGridColumns] = useState(2);
   const gridTouchStartDist = useRef(0);
   const isPinchingGrid = useRef(false);
-  const mainGridRef = useRef(null); // 네이티브 핀치 줌 방지를 위한 ref
+  const mainGridRef = useRef(null); 
 
   // 드래그 앤 드롭 및 롱프레스를 위한 상태와 Refs
   const [draggedPhotoId, setDraggedPhotoId] = useState(null);
@@ -298,7 +302,9 @@ export default function App() {
             setActiveAlbum(code);
             setAlbumCode('');
             setAlbumPassword('');
+            setIsTransitioning(true); // 시네마틱 트랜지션 시작
             setView('main');
+            setTimeout(() => setIsTransitioning(false), 3000); // 3초 뒤 트랜지션 해제
           } else {
             setAuthError('비밀번호가 일치하지 않습니다.');
           }
@@ -317,7 +323,9 @@ export default function App() {
           setActiveAlbum(code);
           setAlbumCode('');
           setAlbumPassword('');
+          setIsTransitioning(true); // 시네마틱 트랜지션 시작
           setView('main');
+          setTimeout(() => setIsTransitioning(false), 3000); // 3초 뒤 트랜지션 해제
           showToast(`앨범이 생성되었어요`);
         }
       }
@@ -340,66 +348,87 @@ export default function App() {
     setIsSidebarOpen(false);
   };
 
+  /**
+   * 고화질 유지를 위한 스마트 압축 로직 (대량 업로드 메모리 터짐 방지 적용)
+   */
   const smartCompressImage = (file, isHighQuality = false) => {
     return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = (event) => {
-        const img = new Image();
-        img.src = event.target.result;
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          const maxWidth = isHighQuality ? 2400 : 800;
-          const maxHeight = isHighQuality ? 2400 : 800;
-          let quality = isHighQuality ? 0.9 : 0.65;
+      const img = new Image();
+      // 메모리를 무겁게 차지하는 FileReader 대신 URL Object 활용
+      const objectUrl = URL.createObjectURL(file);
+      
+      img.src = objectUrl;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        const maxWidth = isHighQuality ? 2400 : 800;
+        const maxHeight = isHighQuality ? 2400 : 800;
+        let quality = isHighQuality ? 0.9 : 0.65;
 
-          if (width > height) {
-            if (width > maxWidth) {
-              height = Math.round(height * (maxWidth / width));
-              width = maxWidth;
-            }
-          } else {
-            if (height > maxHeight) {
-              width = Math.round(width * (maxHeight / height));
-              height = maxHeight;
-            }
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round(height * (maxWidth / width));
+            width = maxWidth;
           }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round(width * (maxHeight / height));
+            height = maxHeight;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const getSafeDataUrl = () => {
+          // Firestore Write Limit 방지를 위해 용량 제한을 더욱 안전하게 하향 조정 (고화질 약 400KB)
+          const targetLimit = isHighQuality ? 400000 : 100000;
+          let dataUrl = canvas.toDataURL('image/jpeg', quality);
           
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-
-          const getSafeDataUrl = () => {
-            const targetLimit = isHighQuality ? 800000 : 150000;
-            let dataUrl = canvas.toDataURL('image/jpeg', quality);
-            
-            while (dataUrl.length > targetLimit && quality > 0.2) {
-              quality -= 0.1;
-              width = Math.round(width * 0.85);
-              height = Math.round(height * 0.85);
-              canvas.width = width;
-              canvas.height = height;
-              ctx.drawImage(img, 0, 0, width, height);
-              dataUrl = canvas.toDataURL('image/jpeg', quality);
-            }
-            return dataUrl;
-          };
-
-          resolve(getSafeDataUrl());
+          while (dataUrl.length > targetLimit && quality > 0.2) {
+            quality -= 0.1;
+            width = Math.round(width * 0.85);
+            height = Math.round(height * 0.85);
+            canvas.width = width;
+            canvas.height = height;
+            ctx.drawImage(img, 0, 0, width, height);
+            dataUrl = canvas.toDataURL('image/jpeg', quality);
+          }
+          return dataUrl;
         };
-        img.onerror = (error) => reject(error);
+
+        const result = getSafeDataUrl();
+
+        // 30장 이상 업로드 시 브라우저 튕김을 막기 위한 명시적 메모리 해제(Clean-up)
+        URL.revokeObjectURL(objectUrl);
+        canvas.width = 0;
+        canvas.height = 0;
+        img.src = '';
+
+        resolve(result);
       };
-      reader.onerror = (error) => reject(error);
+      
+      img.onerror = (error) => {
+        URL.revokeObjectURL(objectUrl);
+        reject(error);
+      };
     });
   };
 
   const handleFileSelect = async (e) => {
     const files = Array.from(e.target.files);
     if (!isAuthReady || !user || !activeAlbum || files.length === 0) return;
+
+    // 20장 제한 방어 로직 추가
+    if (files.length > 20) {
+      showToast('한 번에 최대 20장까지만 업로드 가능합니다.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
 
     const invalidFiles = files.filter(f => !f.type.startsWith('image/'));
     if (invalidFiles.length > 0) {
@@ -426,7 +455,8 @@ export default function App() {
         const highResBase64 = await smartCompressImage(file, true);
         
         setUploadProgress(Math.round(baseProgress + step * 0.7));
-        await addDoc(collection(db, 'photos'), {
+        
+        const photoData = {
           url: thumbBase64,
           originalUrl: highResBase64,
           createdAt: Date.now(),
@@ -434,10 +464,31 @@ export default function App() {
           albumCode: activeAlbum,
           uploaderId: user.uid,
           folderName: selectedFolder || null 
-        });
+        };
+
+        // 대량 업로드 시 Firestore Queue Limit(resource-exhausted) 방지를 위한 재시도 로직
+        let retries = 3;
+        while (retries > 0) {
+          try {
+            await addDoc(collection(db, 'photos'), photoData);
+            // 큐에 쌓인 쓰기 작업이 서버에 완전히 반영될 때까지 대기하여 Stream Exhausted 에러 원천 차단
+            await waitForPendingWrites(db);
+            break; // 성공 시 루프 탈출
+          } catch (writeErr) {
+            console.warn("Firestore queued writes exhausted or network error, retrying in 3s...", writeErr);
+            retries--;
+            if (retries === 0) throw writeErr;
+            // 큐가 꽉 차는 것을 방지하기 위해 에러 시 3초간 길게 대기
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        }
         
         successCount++;
         setUploadProgress(Math.round(baseProgress + step));
+
+        // GC(가비지 컬렉터) 및 서버 부하(Write Stream Exhausted) 완전 차단을 위한 충분한 휴식 (2초)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
       } catch (error) {
         console.error("Upload error for file:", file.name, error);
         if (error.code === 'resource-exhausted' || (error.message && error.message.includes('payload'))) {
@@ -512,6 +563,23 @@ export default function App() {
     } catch(err) {
       console.error('Folder action failed', err);
       showToast('앨범 처리에 실패했습니다.');
+    }
+  };
+
+  const handleCreateGroup = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim() || !groupModalState) return;
+    
+    const folderName = newFolderName.trim();
+    try {
+      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
+      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
+      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
+      setGroupModalState(null);
+      setNewFolderName('');
+    } catch (error) {
+      console.error("Error creating group:", error);
+      showToast('앨범 생성 중 오류가 발생했습니다.');
     }
   };
 
@@ -711,23 +779,6 @@ export default function App() {
     setSelectedPhoto(photo);
   };
 
-  const handleCreateGroup = async (e) => {
-    e.preventDefault();
-    if (!newFolderName.trim() || !groupModalState) return;
-    
-    const folderName = newFolderName.trim();
-    try {
-      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
-      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
-      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
-      setGroupModalState(null);
-      setNewFolderName('');
-    } catch (error) {
-      console.error("Error creating group:", error);
-      showToast('앨범 생성 중 오류가 발생했습니다.');
-    }
-  };
-
   // --- 뷰어 핀치 줌 핸들러 ---
   const handleViewerTouchStart = (e) => {
     isDraggingViewer.current = true;
@@ -825,6 +876,13 @@ export default function App() {
     }
     .animate-jiggle {
       animation: jiggle 0.25s infinite;
+    }
+
+    @keyframes cinematicZoom {
+      0% { opacity: 0; filter: blur(20px); transform: scale(0.9); }
+      20% { opacity: 1; filter: blur(0); transform: scale(1); }
+      80% { opacity: 1; filter: blur(0); transform: scale(1.05); }
+      100% { opacity: 0; filter: blur(20px); transform: scale(1.15); }
     }
 
     .masonry-container {
@@ -992,6 +1050,25 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-white/30 relative" onClick={handleMainClick}>
       <style>{globalStyles}</style>
+
+      {/* 앨범 진입 시 3초간 보여줄 역동적인 시네마틱 인트로 오버레이 */}
+      {isTransitioning && (
+        <div className="fixed inset-0 z-[999] bg-[#050505] flex flex-col items-center justify-center overflow-hidden pointer-events-auto">
+          <div className="noise-bg" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.9)_100%)] pointer-events-none" />
+          <div className="flex flex-col items-center text-center relative z-10 animate-[cinematicZoom_3s_cubic-bezier(0.2,0.8,0.2,1)_forwards]">
+            <PawPrint className="text-white w-16 h-16 mb-8 opacity-80 animate-pulse" strokeWidth={1} />
+            <h1 className="text-4xl md:text-6xl text-white font-cute tracking-widest font-semibold drop-shadow-[0_0_30px_rgba(255,255,255,0.3)] uppercase">
+              {activeAlbum}
+            </h1>
+            <div className="flex justify-center w-full px-4 overflow-hidden mt-6">
+              <p className="text-zinc-500 tracking-[0.6em] text-xs md:text-sm uppercase font-montserrat indent-[0.6em] animate-shimmer">
+                Loading Archive
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* 폰트/사이즈/여백이 최적화된 토스트 팝업 */}
       {toastMessage && (
@@ -1149,7 +1226,7 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                // 캡슐화 버그 해결: mask-image 속성을 제거하여 원본 비율(1열) 또는 정사각형 비율(다열)을 정상적으로 렌더링하도록 롤백
+                // 1열(gridColumns가 1)일 때는 비율 유지, 그 이상일 때는 1:1 종횡비로 크롭 고정
                 className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-black shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id 
@@ -1159,8 +1236,8 @@ export default function App() {
                   ${gridColumns > 1 ? 'aspect-square' : ''}
                 `}
               >
-                {/* 찌꺼기 방지를 위한 2.5px 앱 배경색 보더를 абсолю트 레이어로 물리적으로 덮어 찌꺼기를 원천 차단 */}
-                <div className="absolute -inset-[1.5px] pointer-events-none z-[25] rounded-[18px] border-[2.5px] border-[#050505] shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9)]"></div>
+                {/* 1.5px 솔리드 블랙 이너 섀도우: 찌꺼기 방지를 위해 안쪽으로 덮어씀 (에폭시 질감 유지) */}
+                <div className="absolute inset-0 pointer-events-none z-[25] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9),inset_0_0_0_1.5px_#000]"></div>
                 {/* 빛의 굴절과 반사 오버레이 */}
                 <div className="absolute inset-0 pointer-events-none z-[15] bg-gradient-to-br from-white/30 via-transparent to-black/80 opacity-60 mix-blend-overlay rounded-2xl"></div>
                 <div className="absolute top-0 inset-x-0 h-[50%] pointer-events-none z-[15] bg-gradient-to-b from-white/20 to-transparent rounded-t-2xl mix-blend-screen opacity-80"></div>
