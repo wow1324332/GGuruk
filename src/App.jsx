@@ -97,6 +97,9 @@ export default function App() {
   const [newFolderName, setNewFolderName] = useState('');
   const [targetActionType, setTargetActionType] = useState(null); // 'reorder' | 'group' | 'remove' | null
 
+  // 뷰어용 앨범 이동 모달 상태
+  const [viewerMoveModalOpen, setViewerMoveModalOpen] = useState(false);
+
   // 드래그 앤 드롭 및 롱프레스를 위한 상태와 Refs
   const [draggedPhotoId, setDraggedPhotoId] = useState(null);
   const [targetPhotoId, setTargetPhotoId] = useState(null);
@@ -119,9 +122,6 @@ export default function App() {
   const viewerLastPos = useRef({ x: 0, y: 0 });
   const isDraggingViewer = useRef(false);
   const [viewerDeleteTarget, setViewerDeleteTarget] = useState(null);
-  
-  // 뷰어 내 앨범 이동 모달 상태
-  const [isMoveFolderModalOpen, setIsMoveFolderModalOpen] = useState(false);
 
   // 현재 활성화된 고유 폴더(앨범) 목록 추출
   const folders = [...new Set(photos.map(p => p.folderName).filter(Boolean))];
@@ -480,6 +480,37 @@ export default function App() {
     }
   };
 
+  const handleViewerFolderAction = async (e, photo, newFolder) => {
+    e.preventDefault();
+    try {
+      await updateDoc(doc(db, 'photos', photo.id), { folderName: newFolder || null });
+      setSelectedPhoto(prev => ({ ...prev, folderName: newFolder || null }));
+      setViewerMoveModalOpen(false);
+      showToast(newFolder ? `'${newFolder}' 앨범으로 이동되었습니다.` : '앨범 지정이 해제되었습니다.');
+    } catch(err) {
+      console.error('Folder action failed', err);
+      showToast('앨범 처리에 실패했습니다.');
+    }
+  };
+
+  const handleCreateGroup = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim() || !groupModalState) return;
+    
+    const folderName = newFolderName.trim();
+    try {
+      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
+      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
+      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
+      setGroupModalState(null);
+      setNewFolderName('');
+    } catch (error) {
+      console.error("Error creating group:", error);
+      showToast('앨범 생성 중 오류가 발생했습니다.');
+    }
+  };
+
+
   // --- 모바일 호환 완벽한 부드러운 드래그 앤 드롭 & 다중 선택 핸들러 ---
   const handlePressStart = (e, clientX, clientY, photo) => {
     if (isSelectionMode) return; 
@@ -496,13 +527,12 @@ export default function App() {
 
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
     
-    // 딜레이를 250ms로 단축하여 빠르고 부드러운 반응 제공
     pressTimerRef.current = setTimeout(() => {
       isLongPress.current = true;
       setDraggedPhotoId(photo.id);
       setDragPos({ x: clientX, y: clientY });
       if (navigator.vibrate) navigator.vibrate(50);
-    }, 250); 
+    }, 400); 
   };
 
   const handlePressMove = (e, clientX, clientY) => {
@@ -636,22 +666,6 @@ export default function App() {
     setSelectedPhoto(photo);
   };
 
-  const handleCreateGroup = async (e) => {
-    e.preventDefault();
-    if (!newFolderName.trim() || !groupModalState) return;
-    
-    const folderName = newFolderName.trim();
-    try {
-      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
-      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
-      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
-      setGroupModalState(null);
-      setNewFolderName('');
-    } catch (error) {
-      console.error("Error creating group:", error);
-      showToast('앨범 생성 중 오류가 발생했습니다.');
-    }
-  };
 
   // --- 뷰어 핀치 줌 핸들러 ---
   const handleViewerTouchStart = (e) => {
@@ -929,7 +943,6 @@ export default function App() {
         </div>
       )}
 
-      {/* 시네마틱 중앙 업로드 스피너 */}
       {isUploading && (
         <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-xl animate-cinematic-entrance">
           <div className="relative flex items-center justify-center">
@@ -943,7 +956,6 @@ export default function App() {
         </div>
       )}
 
-      {/* 앨범 내에서 사진 드래그 시: 앨범에서 꺼내기 드롭존 */}
       {selectedFolder && draggedPhotoId && isDragging.current && (
         <div className={`fixed top-0 left-0 right-0 h-32 z-[110] flex flex-col items-center justify-end pb-6 transition-all duration-500 ease-out pointer-events-none ${targetActionType === 'remove' ? 'bg-black/80 backdrop-blur-2xl border-b border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.9)]' : 'bg-black/40 backdrop-blur-sm border-b border-transparent'}`}>
           <div className={`flex flex-col items-center transition-all duration-500 transform ${targetActionType === 'remove' ? 'scale-110 -translate-y-2' : 'scale-100 opacity-50'}`}>
@@ -953,28 +965,27 @@ export default function App() {
         </div>
       )}
 
-      {/* 자유로운 드래그를 위한 고스트 이미지 레이어 (하드웨어 가속 및 z-index 최상단 적용으로 부드러움 향상) */}
       {draggedPhotoId && isDragging.current && ghostImage.current && (
         <div
-          className="fixed z-[9999] pointer-events-none rounded-2xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90 will-change-transform"
+          className="fixed z-[100] pointer-events-none rounded-2xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90"
           style={{
             width: ghostSize.current.width,
             height: ghostSize.current.height,
-            top: 0,
-            left: 0,
-            transform: `translate3d(${dragPos.x - dragOffset.current.x}px, ${dragPos.y - dragOffset.current.y}px, 0) scale(1.05)`,
+            left: dragPos.x - dragOffset.current.x,
+            top: dragPos.y - dragOffset.current.y,
+            transform: 'scale(1.05)',
           }}
         >
           <img src={ghostImage.current} alt="dragging" className="w-full h-full object-cover" />
         </div>
       )}
 
-      {/* 시네마틱 좌측 사이드바 */}
+      {/* 우측 3D 라운딩 및 투명도 업그레이드 사이드바 */}
       <div 
-        className={`fixed inset-y-0 left-0 z-[60] w-64 bg-black/90 backdrop-blur-2xl border-r border-white/10 transform transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        className={`fixed inset-y-0 left-0 z-[60] w-64 bg-black/40 backdrop-blur-3xl rounded-r-[2rem] shadow-[20px_0_50px_rgba(0,0,0,0.7),inset_-2px_0_20px_rgba(255,255,255,0.08)] transform transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
-        <div className="p-6 border-b border-white/10 flex justify-between items-center">
-          <h2 className="text-xs font-montserrat tracking-[0.4em] font-medium text-zinc-500">ALBUMS</h2>
+        <div className="p-6 border-b border-white/5 flex justify-between items-center">
+          <h2 className="text-xs font-montserrat tracking-[0.4em] font-medium text-zinc-400">ALBUMS</h2>
           <button onClick={() => setIsSidebarOpen(false)} className="p-2 text-zinc-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
@@ -985,7 +996,7 @@ export default function App() {
             className={`w-full text-left px-6 py-4 flex items-center space-x-3 transition-colors ${selectedFolder === null ? 'bg-white/10 text-white' : 'text-zinc-400 hover:bg-white/5 hover:text-white'}`}
           >
             <FolderOpen className="w-4 h-4" />
-            <span className="font-cute text-sm tracking-wider pt-0.5">ALL PHOTOS</span>
+            <span className="font-serif-kr text-xs font-light tracking-[0.2em] pt-0.5">전체 보기</span>
           </button>
           
           {folders.map(folder => (
@@ -995,12 +1006,11 @@ export default function App() {
               className={`w-full text-left px-6 py-4 flex items-center space-x-3 transition-colors ${selectedFolder === folder ? 'bg-white/10 text-white' : 'text-zinc-400 hover:bg-white/5 hover:text-white'}`}
             >
               <Folder className="w-4 h-4" />
-              <span className="font-cute text-sm tracking-wider pt-0.5 uppercase">{folder}</span>
+              <span className="font-serif-kr text-xs font-light tracking-[0.2em] pt-0.5">{folder}</span>
             </button>
           ))}
         </div>
       </div>
-      {/* 사이드바 백그라운드 클릭 오버레이 */}
       {isSidebarOpen && (
         <div 
           className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm transition-opacity animate-[cinematicEntrance_0.3s_ease-out]" 
@@ -1008,14 +1018,11 @@ export default function App() {
         />
       )}
       
-      {/* 헤더 */}
       <header className="sticky top-0 z-40 bg-black/80 backdrop-blur-xl border-b border-white/10 px-6 py-5 flex justify-between items-center transition-all">
         <div className="flex items-center space-x-4">
-          {folders.length > 0 && (
-            <button onClick={() => setIsSidebarOpen(true)} className="p-1.5 -ml-2 text-zinc-400 hover:text-white transition-colors">
-              <Menu className="w-6 h-6" />
-            </button>
-          )}
+          <button onClick={() => setIsSidebarOpen(true)} className="p-1.5 -ml-2 text-zinc-400 hover:text-white transition-colors">
+            <Menu className="w-6 h-6" />
+          </button>
           <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
           <h1 className="text-2xl font-cute font-bold tracking-tighter uppercase hidden sm:block">GGURUK</h1>
         </div>
@@ -1065,7 +1072,7 @@ export default function App() {
                 data-id={photo.id}
                 onTouchStart={(e) => handlePressStart(e, e.touches[0].clientX, e.touches[0].clientY, photo)}
                 onTouchMove={(e) => handlePressMove(e, e.touches[0].clientX, e.touches[0].clientY)}
-                onTouchEnd={() => handlePressEnd(photo)}
+                onTouchEnd={(e) => handlePressEnd(photo)}
                 onTouchCancel={handlePressCancel}
                 onMouseDown={(e) => handlePressStart(e, e.clientX, e.clientY, photo)}
                 onMouseMove={(e) => handlePressMove(e, e.clientX, e.clientY)}
@@ -1073,8 +1080,8 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                // 시네마틱 드롭 타겟 표시: 그룹 묶기(emerald) vs 순서 바꾸기(white)
-                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-zinc-900 shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
+                // isolate 클래스 및 [mask-image:radial-gradient(white,black)] 추가로 서브픽셀 찌꺼기 완벽 클리핑 보장
+                className={`masonry-item isolate relative group cursor-pointer overflow-hidden rounded-2xl bg-black shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu [mask-image:radial-gradient(white,black)]
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id 
                       ? (targetActionType === 'group' ? 'ring-4 ring-emerald-400/80 scale-105 shadow-[0_0_40px_rgba(52,211,113,0.3)] z-40' : 'ring-4 ring-white z-40') 
@@ -1082,14 +1089,13 @@ export default function App() {
                   }
                 `}
               >
-                {/* 에폭시 코팅 1: 가장자리 찌꺼기 완벽 제거를 위한 1px 이너 섀도우 포함, 깊은 입체감 */}
-                <div className="absolute inset-0 pointer-events-none z-[15] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9),inset_0_0_0_1px_rgba(0,0,0,0.7)]"></div>
+                {/* 에폭시 코팅 1: 가장자리 찌꺼기 완벽 제거를 위한 1.5px 솔리드 블랙 이너 섀도우 포함, 깊은 입체감 */}
+                <div className="absolute inset-0 pointer-events-none z-[25] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9),inset_0_0_0_1.5px_rgba(0,0,0,1)]"></div>
                 {/* 에폭시 코팅 2: 사선으로 부드럽게 떨어지는 굴절 빛반사 */}
                 <div className="absolute inset-0 pointer-events-none z-[15] bg-gradient-to-br from-white/30 via-transparent to-black/80 opacity-60 mix-blend-overlay rounded-2xl"></div>
                 {/* 에폭시 코팅 3: 상단에 맺히는 극강의 곡선형 하이라이트 */}
                 <div className="absolute top-0 inset-x-0 h-[50%] pointer-events-none z-[15] bg-gradient-to-b from-white/20 to-transparent rounded-t-2xl mix-blend-screen opacity-80"></div>
 
-                {/* 다중 선택 모드 체크박스 */}
                 <div className={`absolute top-4 right-4 z-30 transition-all duration-500 ease-out ${isSelectionMode ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
                   <div className={`w-8 h-8 rounded-full border-[1.5px] flex items-center justify-center backdrop-blur-md transition-all duration-500 shadow-xl ${selectedPhotoIds.has(photo.id) ? 'bg-white/20 border-white shadow-[0_0_20px_rgba(255,255,255,0.4)]' : 'border-white/40 bg-black/40 hover:border-white/80 hover:bg-black/60'}`}>
                     <Check className={`w-5 h-5 text-white drop-shadow-[0_0_10px_rgba(255,255,255,1)] transition-all duration-300 ${selectedPhotoIds.has(photo.id) ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}`} strokeWidth={3} />
@@ -1098,7 +1104,8 @@ export default function App() {
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-10 pointer-events-none"></div>
                 
-                <img src={photo.url} alt="꾸루" loading="lazy" className="w-full h-auto object-cover rounded-2xl hover-scale pointer-events-none" />
+                {/* rounded-2xl 제거 및 블럭 설정으로 부모 영역에 완벽히 마스킹되게 처리 */}
+                <img src={photo.url} alt="꾸루" loading="lazy" className="block w-full h-auto object-cover hover-scale pointer-events-none relative z-0" />
                 
                 <div className="absolute bottom-0 left-0 right-0 p-6 transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500 z-20 pointer-events-none">
                   <p className="text-white text-base font-serif-kr font-light">{new Date(photo.createdAt).toLocaleDateString()}</p>
@@ -1109,36 +1116,29 @@ export default function App() {
         )}
       </main>
 
-      {/* 우측 하단 플로팅 액션 버튼 (FAB) - 기포 제거, 시네마틱 폰트 적용된 입체 물방울 디자인 */}
       {photos.length > 0 && !isSelectionMode && (
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={isUploading}
           className="fixed bottom-8 right-8 z-40 w-16 h-16 bg-gradient-to-br from-white/10 to-transparent backdrop-blur-xl rounded-full flex items-center justify-center transition-all duration-500 ease-out disabled:opacity-50 group shadow-[0_15px_35px_rgba(0,0,0,0.8),inset_0_8px_15px_rgba(255,255,255,0.4),inset_0_-8px_15px_rgba(0,0,0,0.6),inset_0_0_10px_rgba(255,255,255,0.1)] hover:scale-110 hover:shadow-[0_20px_40px_rgba(0,0,0,0.9),inset_0_10px_20px_rgba(255,255,255,0.6),inset_0_-10px_20px_rgba(0,0,0,0.7),inset_0_0_15px_rgba(255,255,255,0.2)]"
         >
-          {/* 시네마틱 세리프 폰트 적용된 '+' 마크 */}
           <span className="font-cinzel text-4xl font-normal leading-none relative top-[1px] drop-shadow-[0_2px_5px_rgba(0,0,0,0.8)] group-hover:drop-shadow-[0_0_15px_rgba(255,255,255,1)] transition-all duration-500 z-10 text-white/90">+</span>
         </button>
       )}
 
-      {/* 다중 선택 시 하단 삭제 컨트롤 바 */}
       {isSelectionMode && (
         <div className="fixed bottom-8 left-0 right-0 z-50 flex justify-center animate-slide-up px-4 pointer-events-none">
           <div className="bg-black/50 backdrop-blur-3xl border border-white/15 rounded-full px-5 py-3.5 flex items-center space-x-5 shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_0_20px_rgba(255,255,255,0.05)] pointer-events-auto whitespace-nowrap">
-            
             <span className="text-white font-cute text-sm tracking-wider whitespace-nowrap flex-shrink-0 drop-shadow-md">
               {selectedPhotoIds.size}장 선택됨
             </span>
-            
             <div className="w-px h-4 bg-white/20 flex-shrink-0"></div>
-            
             <button 
               onClick={() => { setIsSelectionMode(false); setSelectedPhotoIds(new Set()); }} 
               className="text-zinc-300 hover:text-white text-xs md:text-sm font-montserrat tracking-widest uppercase transition-colors whitespace-nowrap flex-shrink-0 drop-shadow-md"
             >
               Cancel
             </button>
-            
             <button 
               onClick={handleDeleteSelected} 
               disabled={selectedPhotoIds.size === 0} 
@@ -1147,17 +1147,15 @@ export default function App() {
               <Minus className="w-4 h-4" />
               <span>Delete</span>
             </button>
-            
           </div>
         </div>
       )}
 
-      {/* 새 앨범 묶기(그룹) 커스텀 모달 */}
       {groupModalState && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
           <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm mx-4 animate-[slideUpFade_0.3s_ease-out]">
             <FolderOpen className="w-8 h-8 text-white/80 mx-auto mb-4" />
-            <h3 className="text-sm text-white font-serif-kr text-center font-light mb-8 tracking-[0.2em]">새 앨범으로 묶기</h3>
+            <h3 className="text-[11px] text-white font-serif-kr text-center font-light mb-8 tracking-[0.3em]">새 앨범으로 묶기</h3>
             <form onSubmit={handleCreateGroup} className="space-y-6">
               <div>
                 <input 
@@ -1191,16 +1189,15 @@ export default function App() {
         </div>
       )}
 
-      {/* 뷰어 삭제 전용 커스텀 모달 */}
       {viewerDeleteTarget && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
           <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl text-center max-w-sm w-full mx-4 animate-[slideUpFade_0.3s_ease-out]">
             <Trash2 className="w-8 h-8 text-red-500 mx-auto mb-4" />
-            <h3 className="text-xl text-white font-serif-kr font-light mb-8 tracking-wide">정말로 이 사진을<br/>삭제하시겠습니까?</h3>
+            <h3 className="text-[11px] text-white font-serif-kr font-light mb-8 tracking-[0.3em] uppercase">정말로 이 사진을<br/>삭제하시겠습니까?</h3>
             <div className="flex justify-center space-x-3">
               <button
                 onClick={() => setViewerDeleteTarget(null)}
-                className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-sm tracking-widest uppercase"
+                className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-[11px] tracking-widest uppercase"
               >
                 Cancel
               </button>
@@ -1209,7 +1206,7 @@ export default function App() {
                    await handleDeletePhoto(viewerDeleteTarget);
                    setViewerDeleteTarget(null);
                 }}
-                className="flex-1 px-4 py-3 rounded-xl bg-red-500 text-white font-montserrat font-bold hover:bg-red-400 transition-colors text-sm tracking-widest uppercase"
+                className="flex-1 px-4 py-3 rounded-xl bg-red-500 text-white font-montserrat font-bold hover:bg-red-400 transition-colors text-[11px] tracking-widest uppercase"
               >
                 Delete
               </button>
@@ -1218,22 +1215,21 @@ export default function App() {
         </div>
       )}
 
-      {/* 앱 로그아웃용 커스텀 모달 */}
       {isLogoutConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md">
           <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl text-center max-w-sm w-full mx-4 animate-[slideUpFade_0.3s_ease-out]">
             <PawPrint className="w-8 h-8 text-zinc-500 mx-auto mb-4" strokeWidth={1.5} />
-            <h3 className="text-xl text-white font-serif-kr font-light mb-8 tracking-wide">정말로 앨범에서<br/>나가시겠습니까?</h3>
+            <h3 className="text-[11px] text-white font-serif-kr font-light mb-8 tracking-[0.3em] uppercase">정말로 앨범에서<br/>나가시겠습니까?</h3>
             <div className="flex justify-center space-x-3">
               <button
                 onClick={() => setIsLogoutConfirmOpen(false)}
-                className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-sm tracking-widest uppercase"
+                className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-[11px] tracking-widest uppercase"
               >
                 Cancel
               </button>
               <button
                 onClick={handleLogout}
-                className="flex-1 px-4 py-3 rounded-xl bg-white text-black font-montserrat font-bold hover:bg-zinc-200 transition-colors text-sm tracking-widest uppercase"
+                className="flex-1 px-4 py-3 rounded-xl bg-white text-black font-montserrat font-bold hover:bg-zinc-200 transition-colors text-[11px] tracking-widest uppercase"
               >
                 Yes
               </button>
@@ -1242,40 +1238,33 @@ export default function App() {
         </div>
       )}
 
-      {/* 뷰어 내 앨범 이동 커스텀 모달 */}
-      {isMoveFolderModalOpen && selectedPhoto && (
+      {viewerMoveModalOpen && selectedPhoto && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
           <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm mx-4 animate-[slideUpFade_0.3s_ease-out]">
-            <FolderPlus className="w-8 h-8 text-white/80 mx-auto mb-4" />
-            <h3 className="text-sm text-white font-serif-kr text-center font-light mb-6 tracking-[0.2em]">앨범으로 이동</h3>
-            
-            <div className="max-h-48 overflow-y-auto mb-6 space-y-2 pr-2 scrollbar-hide">
-              {folders.length === 0 ? (
-                <p className="text-zinc-500 text-xs text-center font-serif-kr py-4">생성된 앨범이 없습니다.</p>
-              ) : (
-                folders.map(folder => (
-                  <button
-                    key={folder}
-                    onClick={async () => {
-                      try {
-                        await updateDoc(doc(db, 'photos', selectedPhoto.id), { folderName: folder });
-                        showToast(`'${folder}' 앨범으로 이동되었습니다.`);
-                        setIsMoveFolderModalOpen(false);
-                      } catch(error) {
-                        showToast('이동 중 오류가 발생했습니다.');
-                      }
-                    }}
-                    className="w-full text-left px-4 py-3 rounded-xl border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 hover:border-zinc-700 transition-colors font-cute text-sm tracking-wider uppercase"
-                  >
-                    {folder}
-                  </button>
-                ))
-              )}
-            </div>
-
-            <div className="flex justify-center">
+            <FolderOpen className="w-8 h-8 text-white/80 mx-auto mb-4" />
+            <h3 className="text-[11px] text-white font-serif-kr text-center font-light mb-8 tracking-[0.3em] uppercase">앨범 관리</h3>
+            <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
               <button
-                onClick={() => setIsMoveFolderModalOpen(false)}
+                onClick={(e) => handleViewerFolderAction(e, selectedPhoto, null)}
+                className="w-full px-4 py-3 rounded-xl border border-zinc-700 text-white hover:bg-zinc-800 transition-colors font-serif-kr text-sm text-left flex items-center justify-between"
+              >
+                <span className="font-light tracking-[0.1em]">앨범 지정 해제</span>
+                {!selectedPhoto.folderName && <Check className="w-4 h-4 text-emerald-500" />}
+              </button>
+              {folders.map(folder => (
+                <button
+                  key={folder}
+                  onClick={(e) => handleViewerFolderAction(e, selectedPhoto, folder)}
+                  className="w-full px-4 py-3 rounded-xl border border-zinc-700 text-white hover:bg-zinc-800 transition-colors font-serif-kr text-sm text-left flex items-center justify-between"
+                >
+                  <span className="font-light tracking-[0.1em]">{folder}</span>
+                  {selectedPhoto.folderName === folder && <Check className="w-4 h-4 text-emerald-500" />}
+                </button>
+              ))}
+            </div>
+            <div className="mt-6 flex justify-center">
+              <button
+                onClick={() => setViewerMoveModalOpen(false)}
                 className="w-full px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-xs tracking-[0.3em] uppercase"
               >
                 Cancel
@@ -1285,20 +1274,19 @@ export default function App() {
         </div>
       )}
 
-      {/* 시네마틱 이미지 뷰어 */}
       {selectedPhoto && (
         <div className="fixed inset-0 z-[200] flex flex-col bg-black/95 backdrop-blur-3xl animate-[cinematicEntrance_0.4s_ease-out]">
           
-          <div className="absolute top-0 left-0 right-0 z-[210] flex justify-between items-center p-5 md:p-6 bg-gradient-to-b from-black/80 to-transparent">
-            <p className="text-white font-serif-kr text-sm md:text-base font-light tracking-wider drop-shadow-md">
-              {new Date(selectedPhoto.createdAt).toLocaleString()}
-            </p>
-            <div className="flex items-center space-x-3 md:space-x-4">
+          <div className="fixed top-0 inset-x-0 h-[25vh] bg-gradient-to-b from-black/95 via-black/40 to-transparent pointer-events-none z-[205]"></div>
+          <div className="fixed bottom-0 inset-x-0 h-[30vh] bg-gradient-to-t from-black/95 via-black/50 to-transparent pointer-events-none z-[205]"></div>
+
+          <div className="absolute top-0 left-0 right-0 z-[210] flex justify-end items-center p-5 md:p-6 pointer-events-none">
+            <div className="flex items-center space-x-3 md:space-x-4 pointer-events-auto">
               <button 
-                onClick={() => setIsMoveFolderModalOpen(true)} 
+                onClick={() => setViewerMoveModalOpen(true)}
                 className="p-2.5 md:p-3 text-zinc-300 hover:text-white transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
               >
-                <FolderPlus className="w-4 h-4 md:w-5 md:h-5" />
+                {selectedPhoto.folderName ? <Folder className="w-4 h-4 md:w-5 md:h-5" /> : <FolderPlus className="w-4 h-4 md:w-5 md:h-5" />}
               </button>
               <button 
                 onClick={(e) => handleDownloadOriginal(e, selectedPhoto)} 
@@ -1322,12 +1310,12 @@ export default function App() {
           </div>
 
           <div
-            className="flex-1 overflow-hidden relative flex items-center justify-center touch-none"
+            className="flex-1 overflow-hidden relative flex items-center justify-center touch-none z-[202]"
             style={{ touchAction: 'none' }}
             onTouchStart={handleViewerTouchStart}
             onTouchMove={handleViewerTouchMove}
             onTouchEnd={handleViewerTouchEnd}
-            onClick={() => { /* 배경 터치 시 줌 아웃이나 닫기 등을 원할 경우 추가 가능 */ }}
+            onClick={() => { /* 배경 터치 시 액션 방지 */ }}
           >
             <img
               src={selectedPhoto.originalUrl || selectedPhoto.url}
@@ -1335,10 +1323,16 @@ export default function App() {
                 transform: `translate(${viewerPos.x}px, ${viewerPos.y}px) scale(${viewerScale})`,
                 transition: isDraggingViewer.current ? 'none' : 'transform 0.2s ease-out'
               }}
-              className="max-w-[100vw] max-h-[100vh] object-contain shadow-2xl transform-gpu"
+              className="max-w-[100vw] max-h-[100vh] object-contain shadow-2xl transform-gpu relative z-[202]"
               alt="viewer"
               onClick={(e) => e.stopPropagation()} 
             />
+          </div>
+
+          <div className="absolute bottom-0 left-0 right-0 p-6 md:p-8 pointer-events-none z-[210] flex items-end">
+            <p className="text-zinc-300 font-cute text-xs md:text-sm font-light tracking-[0.2em] drop-shadow-md opacity-80">
+              {new Date(selectedPhoto.createdAt).toLocaleString()}
+            </p>
           </div>
         </div>
       )}
