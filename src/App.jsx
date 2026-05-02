@@ -288,7 +288,11 @@ export default function App() {
     setSelectedPhotoIds(new Set());
   };
 
-  const compressImage = (file, maxWidth = 1000, maxHeight = 1000, quality = 0.7) => {
+  /**
+   * 고화질 유지를 위한 스마트 압축 로직
+   * Firestore 1MB 제한(약 1,048,576 byte)을 피하면서 최대 해상도 유지
+   */
+  const smartCompressImage = (file, isHighQuality = false) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
@@ -299,6 +303,13 @@ export default function App() {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
+          
+          // 고화질 원본 백업용: 최대 2400px (4K 근접) / 품질 0.9 (거의 무손실)
+          // 화면 표시(썸네일)용: 최대 800px / 품질 0.65
+          const maxWidth = isHighQuality ? 2400 : 800;
+          const maxHeight = isHighQuality ? 2400 : 800;
+          let quality = isHighQuality ? 0.9 : 0.65;
+
           if (width > height) {
             if (width > maxWidth) {
               height = Math.round(height * (maxWidth / width));
@@ -310,12 +321,32 @@ export default function App() {
               height = maxHeight;
             }
           }
+          
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          resolve(dataUrl);
+
+          // Firestore 1MB 제한 방어 로직 수정: 
+          // 썸네일(약 150KB) + 원본(약 800KB) + 메타데이터 합이 1,048,576 Bytes 이내여야 함.
+          const getSafeDataUrl = () => {
+            const targetLimit = isHighQuality ? 800000 : 150000;
+            let dataUrl = canvas.toDataURL('image/jpeg', quality);
+            
+            // 품질과 해상도를 같이 낮추어 더 공격적으로 용량을 깎음
+            while (dataUrl.length > targetLimit && quality > 0.2) {
+              quality -= 0.1;
+              width = Math.round(width * 0.85);
+              height = Math.round(height * 0.85);
+              canvas.width = width;
+              canvas.height = height;
+              ctx.drawImage(img, 0, 0, width, height);
+              dataUrl = canvas.toDataURL('image/jpeg', quality);
+            }
+            return dataUrl;
+          };
+
+          resolve(getSafeDataUrl());
         };
         img.onerror = (error) => reject(error);
       };
@@ -332,16 +363,26 @@ export default function App() {
     }
     setIsUploading(true);
     setUploadProgress(10); 
+    
     try {
-      const compressedBase64 = await compressImage(file, 800, 800, 0.65);
-      setUploadProgress(50); 
+      // 1. 화면 렌더링을 위한 썸네일 생성 (빠르고 용량 작음)
+      const thumbBase64 = await smartCompressImage(file, false);
+      setUploadProgress(40);
+      
+      // 2. 다운로드 보관을 위한 고화질 이미지 생성 (1MB 리밋 내에서 최대한 원본 유지)
+      const highResBase64 = await smartCompressImage(file, true);
+      setUploadProgress(70);
+
+      // Firestore에 썸네일과 고화질 데이터 둘 다 저장
       await addDoc(collection(db, 'photos'), {
-        url: compressedBase64,
+        url: thumbBase64,
+        originalUrl: highResBase64, // 고화질 데이터
         createdAt: Date.now(),
         fileName: file.name,
         albumCode: activeAlbum,
         uploaderId: user.uid
       });
+      
       setUploadProgress(100);
       setIsUploading(false);
       showToast('성공적으로 업로드되었습니다.');
@@ -349,16 +390,16 @@ export default function App() {
     } catch (error) {
       console.error("Upload error:", error);
       setIsUploading(false);
-      showToast('업로드에 실패했습니다.');
+      showToast('업로드에 실패했습니다. 다시 시도해주세요.');
     }
   };
 
   const handleDeleteSelected = async () => {
     if (!isAuthReady || !user || selectedPhotoIds.size === 0) return;
     try {
-      const deletePromises = Array.from(selectedPhotoIds).map(id =>
-        deleteDoc(doc(db, 'photos', id))
-      );
+      const deletePromises = Array.from(selectedPhotoIds).map(async (id) => {
+        return deleteDoc(doc(db, 'photos', id));
+      });
       await Promise.all(deletePromises);
       setIsSelectionMode(false);
       setSelectedPhotoIds(new Set());
@@ -381,14 +422,24 @@ export default function App() {
     }
   };
 
-  const handleDownloadOriginal = (e, url, fileName) => {
+  // Base64 데이터를 다운로드 가능한 파일로 변환하여 다운로드 처리
+  const handleDownloadOriginal = (e, photo) => {
     e.stopPropagation();
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName || `gguruk_${Date.now()}.jpg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      showToast('고화질 이미지를 다운로드 중입니다...');
+      const targetUrl = photo.originalUrl || photo.url; 
+      
+      const link = document.createElement('a');
+      link.href = targetUrl;
+      link.download = photo.fileName || `gguruk_${Date.now()}.jpg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+    } catch (error) {
+      console.error('Download failed:', error);
+      showToast('다운로드에 실패했습니다.');
+    }
   };
 
   // --- 모바일 호환 완벽한 부드러운 드래그 앤 드롭 & 다중 선택 핸들러 ---
@@ -881,7 +932,6 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                // 에폭시 퀄리티 극대화 및 서브픽셀 찌꺼기 방지를 위한 속성 조정 (rounded-2xl)
                 className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-zinc-900 shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id ? 'ring-4 ring-white z-40' : ''}
@@ -903,7 +953,6 @@ export default function App() {
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-10 pointer-events-none"></div>
                 
-                {/* 이미지 자체에도 rounded-2xl 적용하여 곡률 일치 */}
                 <img src={photo.url} alt="꾸루" loading="lazy" className="w-full h-auto object-cover rounded-2xl hover-scale pointer-events-none" />
                 
                 <div className="absolute bottom-0 left-0 right-0 p-6 transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500 z-20 pointer-events-none">
@@ -1009,7 +1058,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 시네마틱 이미지 뷰어 (핀치 줌, 삭제, 원본 다운로드 기능 포함) */}
+      {/* 시네마틱 이미지 뷰어 (원본 다운로드 기능이 적용된 상태) */}
       {selectedPhoto && (
         <div className="fixed inset-0 z-[200] flex flex-col bg-black/95 backdrop-blur-3xl animate-[cinematicEntrance_0.4s_ease-out]">
           
@@ -1019,7 +1068,7 @@ export default function App() {
             </p>
             <div className="flex items-center space-x-3 md:space-x-4">
               <button 
-                onClick={(e) => handleDownloadOriginal(e, selectedPhoto.url, selectedPhoto.fileName)} 
+                onClick={(e) => handleDownloadOriginal(e, selectedPhoto)} 
                 className="p-2.5 md:p-3 text-zinc-300 hover:text-white transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
               >
                 <Download className="w-4 h-4 md:w-5 md:h-5" />
@@ -1048,7 +1097,7 @@ export default function App() {
             onClick={() => { /* 배경 터치 시 줌 아웃이나 닫기 등을 원할 경우 추가 가능 */ }}
           >
             <img
-              src={selectedPhoto.url}
+              src={selectedPhoto.originalUrl || selectedPhoto.url}
               style={{
                 transform: `translate(${viewerPos.x}px, ${viewerPos.y}px) scale(${viewerScale})`,
                 transition: isDraggingViewer.current ? 'none' : 'transform 0.2s ease-out'
