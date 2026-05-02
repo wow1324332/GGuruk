@@ -715,6 +715,20 @@ export default function App() {
         </div>
       )}
 
+      {/* 시네마틱 중앙 업로드 스피너 */}
+      {isUploading && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-xl animate-cinematic-entrance">
+          <div className="relative flex items-center justify-center">
+            <div className="absolute w-24 h-24 border-t-2 border-b-2 border-white/20 rounded-full animate-spin"></div>
+            <div className="absolute w-16 h-16 border-r-2 border-l-2 border-white/40 rounded-full animate-[spin_2s_linear_infinite_reverse]"></div>
+            <Loader2 className="w-8 h-8 animate-spin text-white drop-shadow-[0_0_15px_rgba(255,255,255,1)]" />
+          </div>
+          <span className="mt-8 text-white font-montserrat tracking-[0.4em] text-xs uppercase animate-pulse drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">
+            Uploading {uploadProgress}%
+          </span>
+        </div>
+      )}
+
       {/* 자유로운 드래그를 위한 고스트 이미지 레이어 */}
       {draggedPhotoId && isDragging.current && ghostImage.current && (
         <div
@@ -749,33 +763,15 @@ export default function App() {
         </div>
       </header>
       
-      <main className="max-w-[1600px] mx-auto px-6 py-12 pb-32">
+      <main className="max-w-[1600px] mx-auto px-6 py-12 pb-32 relative">
+        <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 space-y-6 md:space-y-0">
           <div>
             <h2 className="text-4xl md:text-5xl font-cute font-bold mb-4 tracking-tighter uppercase">GGURUK</h2>
             <p className="text-zinc-400 font-serif-kr font-light text-lg">우리가 함께한 반짝이는 순간들</p>
           </div>
-          <div className="flex items-center space-x-4 w-full md:w-auto">
-            {isUploading && (
-              <div className="flex items-center space-x-3 bg-zinc-900 rounded-xl px-5 py-3 border border-zinc-700">
-                <Loader2 className="w-4 h-4 animate-spin text-white" />
-                <span className="text-sm text-zinc-300 font-montserrat">UPLOADING... {uploadProgress}%</span>
-              </div>
-            )}
-            <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
-            
-            {photos.length > 0 && (
-              <button 
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading}
-                className="w-full md:w-auto bg-white text-black px-8 py-4 rounded-xl font-cute font-bold flex items-center justify-center space-x-3 hover:bg-zinc-200 transition-colors shadow-lg text-lg tracking-wider"
-              >
-                <Upload className="w-5 h-5" />
-                <span>Add Photo</span>
-              </button>
-            )}
-          </div>
         </div>
+        
         {photos.length === 0 ? (
           <div className="pt-20 pb-40 flex flex-col items-center justify-center">
             <button 
@@ -807,8 +803,8 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-xl bg-zinc-900 shadow-2xl transition-all duration-300
-                  ${draggedPhotoId === photo.id ? 'opacity-0 scale-95' : ''}
+                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-xl bg-zinc-900 shadow-2xl transition-all duration-500 ease-out
+                  ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id ? 'ring-4 ring-white z-40' : ''}
                 `}
               >
@@ -830,12 +826,23 @@ export default function App() {
         )}
       </main>
 
+      {/* 우측 하단 플로팅 액션 버튼 (FAB) */}
+      {photos.length > 0 && !isSelectionMode && (
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isUploading}
+          className="fixed bottom-8 right-8 z-40 w-14 h-14 bg-white/90 backdrop-blur-md text-black rounded-full shadow-[0_0_30px_rgba(255,255,255,0.4)] flex items-center justify-center hover:scale-105 hover:bg-white transition-all duration-300 disabled:opacity-50"
+        >
+          <span className="text-3xl font-light leading-none mb-1">+</span>
+        </button>
+      )}
+
       {/* 다중 선택 시 하단 삭제 컨트롤 바 - 줄바꿈 방지 및 시네마틱 투명 효과 추가, 폰트 변경 */}
       {isSelectionMode && (
         <div className="fixed bottom-8 left-0 right-0 z-50 flex justify-center animate-slide-up px-4 pointer-events-none">
           <div className="bg-black/50 backdrop-blur-3xl border border-white/15 rounded-full px-5 py-3.5 flex items-center space-x-5 shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_0_20px_rgba(255,255,255,0.05)] pointer-events-auto whitespace-nowrap">
             
-            <span className="text-white font-cute text-lg tracking-wider whitespace-nowrap flex-shrink-0 drop-shadow-md">
+            <span className="text-white font-cute text-sm tracking-wider whitespace-nowrap flex-shrink-0 drop-shadow-md">
               {selectedPhotoIds.size}장 선택됨
             </span>
             
