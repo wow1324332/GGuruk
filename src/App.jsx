@@ -29,7 +29,8 @@ import {
   Lock, 
   Key,
   Download,
-  Minus
+  Minus,
+  Check
 } from 'lucide-react';
 
 // --- 회원님 전용 외부 Firebase 환경 변수 연동 ---
@@ -54,7 +55,7 @@ export default function App() {
   const [photos, setPhotos] = useState([]);
   
   const [isLoginMode, setIsLoginMode] = useState(true);
-  const [rememberMe, setRememberMe] = useState(false); // 아이디/비번 기억하기 상태 추가
+  const [rememberMe, setRememberMe] = useState(false);
   const [albumCode, setAlbumCode] = useState('');
   const [albumPassword, setAlbumPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -68,35 +69,34 @@ export default function App() {
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
   
-  // 모달 상태
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = useState(false);
-
-  // PWA 설치 프롬프트 이벤트를 저장하기 위한 state
   const [deferredPrompt, setDeferredPrompt] = useState(null);
 
-  // 모바일 전용 롱프레스 및 드래그 앤 드롭을 위한 상태와 Refs
-  const [editPhotoId, setEditPhotoId] = useState(null);
+  // 다중 선택 모드 상태
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState(new Set());
+
+  // 드래그 앤 드롭 및 롱프레스를 위한 상태와 Refs
   const [draggedPhotoId, setDraggedPhotoId] = useState(null);
   const [targetPhotoId, setTargetPhotoId] = useState(null);
+  const [dragPos, setDragPos] = useState({ x: 0, y: 0 }); 
   
   const pressTimerRef = useRef(null);
   const touchPos = useRef({ x: 0, y: 0 });
+  const dragOffset = useRef({ x: 0, y: 0 }); 
+  const ghostSize = useRef({ width: 0, height: 0 }); 
+  const ghostImage = useRef(null); 
   const isLongPress = useRef(false);
   const isDragging = useRef(false);
   const justLongPressed = useRef(false);
 
   useEffect(() => {
-    // PWA 설치 이벤트 리스너 등록
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
     };
-
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    };
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
 
   useEffect(() => {
@@ -165,7 +165,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user, isAuthReady, view, activeAlbum]);
 
-  // 로그인 화면 진입 시, 기억된 정보가 있으면 자동 완성
   useEffect(() => {
     if (view === 'auth' && isLoginMode) {
       const savedCode = localStorage.getItem('gguruk_saved_code');
@@ -221,7 +220,6 @@ export default function App() {
         if (albumDocSnap.exists()) {
           const albumData = albumDocSnap.data();
           if (albumData.password === pwd) {
-            // 정보 기억하기 로직
             if (rememberMe) {
               localStorage.setItem('gguruk_saved_code', code);
               localStorage.setItem('gguruk_saved_pwd', pwd);
@@ -229,7 +227,6 @@ export default function App() {
               localStorage.removeItem('gguruk_saved_code');
               localStorage.removeItem('gguruk_saved_pwd');
             }
-            
             setActiveAlbum(code);
             setAlbumCode('');
             setAlbumPassword('');
@@ -269,6 +266,8 @@ export default function App() {
     setIsLoginMode(true); 
     setView('auth');
     setIsLogoutConfirmOpen(false);
+    setIsSelectionMode(false);
+    setSelectedPhotoIds(new Set());
   };
 
   const compressImage = (file, maxWidth = 1000, maxHeight = 1000, quality = 0.7) => {
@@ -336,23 +335,30 @@ export default function App() {
     }
   };
 
-  const handleDeletePhoto = async (photoId) => {
-    if (!isAuthReady || !user) return;
+  const handleDeleteSelected = async () => {
+    if (!isAuthReady || !user || selectedPhotoIds.size === 0) return;
     try {
-      await deleteDoc(doc(db, 'photos', photoId));
-      setSelectedPhoto(null);
-      setEditPhotoId(null);
-      showToast('사진이 삭제되었습니다.');
+      const deletePromises = Array.from(selectedPhotoIds).map(id =>
+        deleteDoc(doc(db, 'photos', id))
+      );
+      await Promise.all(deletePromises);
+      setIsSelectionMode(false);
+      setSelectedPhotoIds(new Set());
+      showToast(`${deletePromises.length}장의 사진이 삭제되었습니다.`);
     } catch (error) {
-      console.error("Error deleting photo:", error);
+      console.error("Error deleting photos:", error);
       showToast('삭제 중 오류가 발생했습니다.');
     }
   };
 
-  // --- 모바일 호환 완벽한 터치/롱프레스 핸들러 ---
-  const handlePressStart = (clientX, clientY, photo) => {
-    if (editPhotoId) return; // 편집 모드면 롱프레스 트리거 무시
+  const handlePressStart = (e, clientX, clientY, photo) => {
+    if (isSelectionMode) return; 
     
+    const rect = e.currentTarget.getBoundingClientRect();
+    ghostSize.current = { width: rect.width, height: rect.height };
+    dragOffset.current = { x: clientX - rect.left, y: clientY - rect.top };
+    ghostImage.current = photo.url;
+
     touchPos.current = { x: clientX, y: clientY };
     isLongPress.current = false;
     isDragging.current = false;
@@ -360,37 +366,45 @@ export default function App() {
 
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
     
-    // 0.4초간 꾹 누르면 롱프레스 및 드래그 모드 즉시 활성화
     pressTimerRef.current = setTimeout(() => {
       isLongPress.current = true;
       setDraggedPhotoId(photo.id);
-      if (navigator.vibrate) navigator.vibrate(50); // 짧은 진동 피드백
+      setDragPos({ x: clientX, y: clientY });
+      if (navigator.vibrate) navigator.vibrate(50);
     }, 400); 
   };
 
-  const handlePressMove = (clientX, clientY) => {
+  const handlePressMove = (e, clientX, clientY) => {
+    const dx = Math.abs(clientX - touchPos.current.x);
+    const dy = Math.abs(clientY - touchPos.current.y);
+
     if (!isLongPress.current && pressTimerRef.current) {
-      // 0.4초가 지나기 전 스크롤 등 큰 움직임이 발생하면 롱프레스 취소
-      const dx = Math.abs(clientX - touchPos.current.x);
-      const dy = Math.abs(clientY - touchPos.current.y);
       if (dx > 10 || dy > 10) {
         clearTimeout(pressTimerRef.current);
         setDraggedPhotoId(null);
       }
     } else if (isLongPress.current) {
-      // 롱프레스 후 드래그 시 순서 변경 처리
-      isDragging.current = true;
-      const elem = document.elementFromPoint(clientX, clientY);
-      const targetItem = elem?.closest('.masonry-item');
-      if (targetItem) {
-        const targetId = targetItem.getAttribute('data-id');
-        if (targetId && targetId !== draggedPhotoId) {
-          setTargetPhotoId(targetId);
+      if (!isDragging.current && (dx > 10 || dy > 10)) {
+        isDragging.current = true;
+        document.body.style.overflow = 'hidden';
+        document.body.style.touchAction = 'none';
+      }
+      
+      if (isDragging.current) {
+        setDragPos({ x: clientX, y: clientY });
+
+        const elem = document.elementFromPoint(clientX, clientY);
+        const targetItem = elem?.closest('.masonry-item');
+        if (targetItem) {
+          const targetId = targetItem.getAttribute('data-id');
+          if (targetId && targetId !== draggedPhotoId) {
+            setTargetPhotoId(targetId);
+          } else {
+            setTargetPhotoId(null);
+          }
         } else {
           setTargetPhotoId(null);
         }
-      } else {
-        setTargetPhotoId(null);
       }
     }
   };
@@ -399,56 +413,64 @@ export default function App() {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
 
     if (isLongPress.current) {
-      if (isDragging.current && targetPhotoId) {
-        // 드래그 앤 드롭으로 순서 맞바꾸기
-        const dragged = photos.find(p => p.id === draggedPhotoId);
-        const target = photos.find(p => p.id === targetPhotoId);
-        if (dragged && target) {
-          try {
-            const draggedRef = doc(db, 'photos', dragged.id);
-            const targetRef = doc(db, 'photos', target.id);
-            await updateDoc(draggedRef, { createdAt: target.createdAt });
-            await updateDoc(targetRef, { createdAt: dragged.createdAt });
-            showToast('순서가 변경되었습니다.');
-          } catch (error) {
-            console.error("Reorder failed", error);
-            showToast('순서 변경에 실패했습니다.');
+      if (isDragging.current) {
+        if (targetPhotoId) {
+          const dragged = photos.find(p => p.id === draggedPhotoId);
+          const target = photos.find(p => p.id === targetPhotoId);
+          if (dragged && target) {
+            try {
+              const draggedRef = doc(db, 'photos', dragged.id);
+              const targetRef = doc(db, 'photos', target.id);
+              await updateDoc(draggedRef, { createdAt: target.createdAt });
+              await updateDoc(targetRef, { createdAt: dragged.createdAt });
+              showToast('순서가 변경되었습니다.');
+            } catch (error) {
+              console.error("Reorder failed", error);
+              showToast('순서 변경에 실패했습니다.');
+            }
           }
         }
-      } else if (!isDragging.current) {
-        // 드래그 없이 손만 떼었으면 제자리 편집(삭제버튼) 모드 활성화
-        setEditPhotoId(photo.id);
+      } else {
+        setIsSelectionMode(true);
+        setSelectedPhotoIds(new Set([photo.id]));
         justLongPressed.current = true;
         setTimeout(() => { justLongPressed.current = false; }, 300);
       }
     }
 
-    // 상태 초기화
     isLongPress.current = false;
     isDragging.current = false;
+    document.body.style.overflow = '';
+    document.body.style.touchAction = '';
     setDraggedPhotoId(null);
     setTargetPhotoId(null);
   };
 
   const handlePressCancel = () => {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
-    if (!isDragging.current) {
-      isLongPress.current = false;
-      setDraggedPhotoId(null);
+    if (isDragging.current) {
+       document.body.style.overflow = '';
+       document.body.style.touchAction = '';
     }
+    isLongPress.current = false;
+    isDragging.current = false;
+    setDraggedPhotoId(null);
+    setTargetPhotoId(null);
   };
 
   const handleClick = (e, photo) => {
     e.stopPropagation();
     
-    if (justLongPressed.current) return; // 롱프레스 직후 터치 이벤트 무시 (확대 방지)
+    if (justLongPressed.current) return;
     
-    if (editPhotoId === photo.id) {
-       return; // 삭제버튼이 떠 있는 본인을 터치해도 무시 (삭제는 마이너스 버튼 전용)
-    }
-    
-    if (editPhotoId) {
-      setEditPhotoId(null); // 다른 사진이나 빈 공간 클릭 시 편집 모드 즉시 해제
+    if (isSelectionMode) {
+      const newSet = new Set(selectedPhotoIds);
+      if (newSet.has(photo.id)) {
+        newSet.delete(photo.id);
+      } else {
+        newSet.add(photo.id);
+      }
+      setSelectedPhotoIds(newSet);
       return; 
     }
     
@@ -456,8 +478,7 @@ export default function App() {
   };
 
   const handleMainClick = () => {
-    // 사진 외부(배경/여백) 터치 시 편집 모드 즉시 해제
-    if (editPhotoId) setEditPhotoId(null); 
+    // 배경 클릭 시 동작 유지 (선택 모드는 하단 Cancel 버튼으로 명시적 취소)
   };
 
   const globalStyles = `
@@ -530,7 +551,6 @@ export default function App() {
       break-inside: avoid;
       margin-bottom: 1.5rem;
       animation: fadeUpItem 0.8s ease-out backwards;
-      /* 롱프레스 시 모바일 브라우저 고유 메뉴 및 텍스트 선택 완벽 차단 */
       -webkit-touch-callout: none;
       -webkit-user-select: none;
       user-select: none;
@@ -579,22 +599,11 @@ export default function App() {
 
   if (view === 'auth') {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 sm:p-8 relative">
+      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center p-4 sm:p-8 relative">
         <style>{globalStyles}</style>
 
-        {/* 인스톨 버튼 위치를 카드 내측 우측 상단으로 완벽히 원상복구했습니다 */}
-        <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up mt-8 md:mt-0 relative">
+        <div className="w-full max-w-5xl flex flex-col md:flex-row bg-[#0f0f0f] rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl animate-slide-up relative">
           
-          <div className="absolute top-6 right-6 md:top-10 md:right-10 z-50 flex items-center h-10">
-            <button 
-              onClick={handleInstallClick}
-              className="flex items-center space-x-2 bg-zinc-900/80 hover:bg-white hover:text-black border border-zinc-700 text-zinc-300 px-5 py-2.5 rounded-full transition-all duration-300 shadow-lg backdrop-blur-md group"
-            >
-              <Download className="w-4 h-4 group-hover:text-black transition-colors" />
-              <span className="font-montserrat font-medium text-sm tracking-widest uppercase">Install</span>
-            </button>
-          </div>
-
           <div className="w-full md:w-28 p-6 md:p-10 relative overflow-hidden flex flex-col justify-start items-start md:items-center bg-[#0d0d0d]">
             <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-zinc-800 to-black z-0"></div>
             <div className="absolute -top-32 -left-32 w-[30rem] h-[30rem] bg-white/5 rounded-full blur-[120px] z-0"></div>
@@ -681,6 +690,15 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        <button 
+          onClick={handleInstallClick}
+          className="mt-8 flex items-center space-x-1.5 text-zinc-600 hover:text-white transition-colors duration-300"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span className="font-montserrat font-medium text-[10px] tracking-[0.2em] uppercase">Install App</span>
+        </button>
+
       </div>
     );
   }
@@ -696,7 +714,24 @@ export default function App() {
           <span>{toastMessage}</span>
         </div>
       )}
+
+      {/* 자유로운 드래그를 위한 고스트 이미지 레이어 */}
+      {draggedPhotoId && isDragging.current && ghostImage.current && (
+        <div
+          className="fixed z-[100] pointer-events-none rounded-xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90"
+          style={{
+            width: ghostSize.current.width,
+            height: ghostSize.current.height,
+            left: dragPos.x - dragOffset.current.x,
+            top: dragPos.y - dragOffset.current.y,
+            transform: 'scale(1.05)',
+          }}
+        >
+          <img src={ghostImage.current} alt="dragging" className="w-full h-full object-cover" />
+        </div>
+      )}
       
+      {/* 헤더 z-index 40 유지, 체크박스는 아래에서 z-30으로 설정하여 헤더 위로 스크롤되지 않도록 해결 */}
       <header className="sticky top-0 z-40 bg-black/80 backdrop-blur-xl border-b border-white/10 px-6 py-5 flex justify-between items-center transition-all">
         <div className="flex items-center space-x-4">
           <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
@@ -713,7 +748,8 @@ export default function App() {
           </button>
         </div>
       </header>
-      <main className="max-w-[1600px] mx-auto px-6 py-12">
+      
+      <main className="max-w-[1600px] mx-auto px-6 py-12 pb-32">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 space-y-6 md:space-y-0">
           <div>
             <h2 className="text-4xl md:text-5xl font-cute font-bold mb-4 tracking-tighter uppercase">GGURUK</h2>
@@ -761,42 +797,27 @@ export default function App() {
               <div 
                 key={photo.id} 
                 data-id={photo.id}
-                onTouchStart={(e) => handlePressStart(e.touches[0].clientX, e.touches[0].clientY, photo)}
-                onTouchMove={(e) => handlePressMove(e.touches[0].clientX, e.touches[0].clientY)}
+                onTouchStart={(e) => handlePressStart(e, e.touches[0].clientX, e.touches[0].clientY, photo)}
+                onTouchMove={(e) => handlePressMove(e, e.touches[0].clientX, e.touches[0].clientY)}
                 onTouchEnd={() => handlePressEnd(photo)}
                 onTouchCancel={handlePressCancel}
-                onMouseDown={(e) => handlePressStart(e.clientX, e.clientY, photo)}
-                onMouseMove={(e) => handlePressMove(e.clientX, e.clientY)}
+                onMouseDown={(e) => handlePressStart(e, e.clientX, e.clientY, photo)}
+                onMouseMove={(e) => handlePressMove(e, e.clientX, e.clientY)}
                 onMouseUp={() => handlePressEnd(photo)}
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                style={{ 
-                  WebkitTapHighlightColor: 'transparent',
-                  touchAction: draggedPhotoId === photo.id ? 'none' : 'auto' 
-                }} 
                 className={`masonry-item relative group cursor-pointer overflow-hidden rounded-xl bg-zinc-900 shadow-2xl transition-all duration-300
-                  ${editPhotoId === photo.id ? 'animate-jiggle ring-2 ring-white/50 z-30' : ''}
-                  ${draggedPhotoId === photo.id ? 'opacity-50 scale-105 z-50' : ''}
-                  ${targetPhotoId === photo.id ? 'ring-4 ring-white z-40' : ''}
+                  ${draggedPhotoId === photo.id ? 'opacity-0 scale-95' : ''}
+                  ${targetPhotoId === photo.id && draggedPhotoId !== photo.id ? 'ring-4 ring-white z-40' : ''}
                 `}
               >
-                {editPhotoId === photo.id && (
-                  <button
-                    onTouchEnd={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault(); 
-                      handleDeletePhoto(photo.id);
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeletePhoto(photo.id);
-                    }}
-                    className="absolute top-4 right-4 z-40 bg-red-500 text-white rounded-full w-8 h-8 flex items-center justify-center shadow-lg hover:bg-red-600 transition-colors"
-                  >
-                    <Minus className="w-5 h-5" strokeWidth={3} />
-                  </button>
-                )}
+                {/* 다중 선택 모드 체크박스 - 조건부 렌더링을 삭제하여 버벅임 제거, 투명도와 스케일로 부드럽게 전환. 헤더 아래로 들어가게 z-30 적용 */}
+                <div className={`absolute top-4 right-4 z-30 transition-all duration-500 ease-out ${isSelectionMode ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
+                  <div className={`w-8 h-8 rounded-full border-[1.5px] flex items-center justify-center backdrop-blur-md transition-all duration-500 shadow-xl ${selectedPhotoIds.has(photo.id) ? 'bg-white/20 border-white shadow-[0_0_20px_rgba(255,255,255,0.4)]' : 'border-white/40 bg-black/40 hover:border-white/80 hover:bg-black/60'}`}>
+                    <Check className={`w-5 h-5 text-white drop-shadow-[0_0_10px_rgba(255,255,255,1)] transition-all duration-300 ${selectedPhotoIds.has(photo.id) ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}`} strokeWidth={3} />
+                  </div>
+                </div>
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-10 pointer-events-none"></div>
                 <img src={photo.url} alt="꾸루" loading="lazy" className="w-full h-auto object-cover hover-scale pointer-events-none" />
@@ -808,6 +829,37 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* 다중 선택 시 하단 삭제 컨트롤 바 - 줄바꿈 방지 및 시네마틱 투명 효과 추가, 폰트 변경 */}
+      {isSelectionMode && (
+        <div className="fixed bottom-8 left-0 right-0 z-50 flex justify-center animate-slide-up px-4 pointer-events-none">
+          <div className="bg-black/50 backdrop-blur-3xl border border-white/15 rounded-full px-5 py-3.5 flex items-center space-x-5 shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_0_20px_rgba(255,255,255,0.05)] pointer-events-auto whitespace-nowrap">
+            
+            <span className="text-white font-cute text-lg tracking-wider whitespace-nowrap flex-shrink-0 drop-shadow-md">
+              {selectedPhotoIds.size}장 선택됨
+            </span>
+            
+            <div className="w-px h-4 bg-white/20 flex-shrink-0"></div>
+            
+            <button 
+              onClick={() => { setIsSelectionMode(false); setSelectedPhotoIds(new Set()); }} 
+              className="text-zinc-300 hover:text-white text-xs md:text-sm font-montserrat tracking-widest uppercase transition-colors whitespace-nowrap flex-shrink-0 drop-shadow-md"
+            >
+              Cancel
+            </button>
+            
+            <button 
+              onClick={handleDeleteSelected} 
+              disabled={selectedPhotoIds.size === 0} 
+              className="text-red-400 hover:text-red-300 text-xs md:text-sm font-montserrat tracking-widest uppercase disabled:opacity-50 flex items-center space-x-1.5 transition-colors whitespace-nowrap flex-shrink-0 drop-shadow-md"
+            >
+              <Minus className="w-4 h-4" />
+              <span>Delete</span>
+            </button>
+            
+          </div>
+        </div>
+      )}
 
       {isLogoutConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md">
