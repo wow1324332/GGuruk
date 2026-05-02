@@ -100,6 +100,12 @@ export default function App() {
   // 뷰어용 앨범 이동 모달 상태
   const [viewerMoveModalOpen, setViewerMoveModalOpen] = useState(false);
 
+  // 그리드 칼럼 상태 (모바일 디폴트 2)
+  const [gridColumns, setGridColumns] = useState(2);
+  const gridTouchStartDist = useRef(0);
+  const isPinchingGrid = useRef(false);
+  const mainGridRef = useRef(null); // 네이티브 핀치 줌 방지를 위한 ref
+
   // 드래그 앤 드롭 및 롱프레스를 위한 상태와 Refs
   const [draggedPhotoId, setDraggedPhotoId] = useState(null);
   const [targetPhotoId, setTargetPhotoId] = useState(null);
@@ -137,6 +143,22 @@ export default function App() {
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
+
+  // 모바일 브라우저 네이티브 핀치 줌 방지 로직 (스크롤은 허용, 두 손가락 줌만 차단)
+  useEffect(() => {
+    const preventNativeZoom = (e) => {
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+    const el = mainGridRef.current;
+    if (el) {
+      el.addEventListener('touchmove', preventNativeZoom, { passive: false });
+    }
+    return () => {
+      if (el) el.removeEventListener('touchmove', preventNativeZoom);
+    };
+  }, [view]);
 
   useEffect(() => {
     const loadFonts = async () => {
@@ -493,27 +515,45 @@ export default function App() {
     }
   };
 
-  const handleCreateGroup = async (e) => {
-    e.preventDefault();
-    if (!newFolderName.trim() || !groupModalState) return;
-    
-    const folderName = newFolderName.trim();
-    try {
-      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
-      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
-      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
-      setGroupModalState(null);
-      setNewFolderName('');
-    } catch (error) {
-      console.error("Error creating group:", error);
-      showToast('앨범 생성 중 오류가 발생했습니다.');
+  // --- 메인 그리드 핀치 줌 핸들러 ---
+  const handleGridTouchStart = (e) => {
+    if (e.touches.length === 2) {
+      isPinchingGrid.current = true;
+      handlePressCancel(); 
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      gridTouchStartDist.current = dist;
     }
   };
 
+  const handleGridTouchMove = (e) => {
+    if (isPinchingGrid.current && e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const ratio = dist / gridTouchStartDist.current;
+
+      if (ratio > 1.2 && gridColumns > 1) {
+        setGridColumns(prev => prev - 1);
+        gridTouchStartDist.current = dist; 
+      } 
+      else if (ratio < 0.8 && gridColumns < 4) {
+        setGridColumns(prev => prev + 1);
+        gridTouchStartDist.current = dist;
+      }
+    }
+  };
+
+  const handleGridTouchEnd = () => {
+    isPinchingGrid.current = false;
+  };
 
   // --- 모바일 호환 완벽한 부드러운 드래그 앤 드롭 & 다중 선택 핸들러 ---
   const handlePressStart = (e, clientX, clientY, photo) => {
-    if (isSelectionMode) return; 
+    if (isSelectionMode || isPinchingGrid.current) return; 
     
     const rect = e.currentTarget.getBoundingClientRect();
     ghostSize.current = { width: rect.width, height: rect.height };
@@ -528,14 +568,18 @@ export default function App() {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
     
     pressTimerRef.current = setTimeout(() => {
-      isLongPress.current = true;
-      setDraggedPhotoId(photo.id);
-      setDragPos({ x: clientX, y: clientY });
-      if (navigator.vibrate) navigator.vibrate(50);
+      if (!isPinchingGrid.current) {
+        isLongPress.current = true;
+        setDraggedPhotoId(photo.id);
+        setDragPos({ x: clientX, y: clientY });
+        if (navigator.vibrate) navigator.vibrate(50);
+      }
     }, 400); 
   };
 
   const handlePressMove = (e, clientX, clientY) => {
+    if (isPinchingGrid.current) return;
+
     const dx = Math.abs(clientX - touchPos.current.x);
     const dy = Math.abs(clientY - touchPos.current.y);
 
@@ -584,6 +628,7 @@ export default function App() {
 
   const handlePressEnd = async (photo) => {
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
+    if (isPinchingGrid.current) return;
 
     if (isLongPress.current) {
       if (isDragging.current) {
@@ -650,7 +695,7 @@ export default function App() {
   const handleClick = (e, photo) => {
     e.stopPropagation();
     
-    if (justLongPressed.current) return;
+    if (justLongPressed.current || isPinchingGrid.current) return;
     
     if (isSelectionMode) {
       const newSet = new Set(selectedPhotoIds);
@@ -666,6 +711,22 @@ export default function App() {
     setSelectedPhoto(photo);
   };
 
+  const handleCreateGroup = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim() || !groupModalState) return;
+    
+    const folderName = newFolderName.trim();
+    try {
+      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
+      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
+      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
+      setGroupModalState(null);
+      setNewFolderName('');
+    } catch (error) {
+      console.error("Error creating group:", error);
+      showToast('앨범 생성 중 오류가 발생했습니다.');
+    }
+  };
 
   // --- 뷰어 핀치 줌 핸들러 ---
   const handleViewerTouchStart = (e) => {
@@ -767,16 +828,13 @@ export default function App() {
     }
 
     .masonry-container {
-      column-count: 2;
-      column-gap: 1.5rem;
+      display: grid;
+      gap: 1.5rem;
+      transition: grid-template-columns 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
-    @media (min-width: 768px) { .masonry-container { column-count: 3; } }
-    @media (min-width: 1024px) { .masonry-container { column-count: 4; } }
-    @media (min-width: 1280px) { .masonry-container { column-count: 5; } }
     
     .masonry-item {
       break-inside: avoid;
-      margin-bottom: 1.5rem;
       animation: fadeUpItem 0.8s ease-out backwards;
       -webkit-touch-callout: none;
       -webkit-user-select: none;
@@ -976,7 +1034,7 @@ export default function App() {
             transform: 'scale(1.05)',
           }}
         >
-          <img src={ghostImage.current} alt="dragging" className="w-full h-full object-cover" />
+          <img src={ghostImage.current} alt="dragging" className="w-full h-full object-cover rounded-2xl" />
         </div>
       )}
 
@@ -1038,7 +1096,15 @@ export default function App() {
         </div>
       </header>
       
-      <main className="max-w-[1600px] mx-auto px-6 py-12 pb-32 relative">
+      {/* 핀치 줌 이벤트를 메인 태그 전체에 할당. native pinch 차단을 위한 ref 추가 */}
+      <main 
+        id="main-grid"
+        ref={mainGridRef}
+        className="max-w-[1600px] mx-auto px-6 py-12 pb-32 relative"
+        onTouchStart={handleGridTouchStart}
+        onTouchMove={handleGridTouchMove}
+        onTouchEnd={handleGridTouchEnd}
+      >
         <input type="file" accept="image/*" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 space-y-6 md:space-y-0">
           <div>
@@ -1065,14 +1131,17 @@ export default function App() {
             </button>
           </div>
         ) : (
-          <div className="masonry-container">
+          <div 
+            className="masonry-container"
+            style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
+          >
             {displayPhotos.map((photo) => (
               <div 
                 key={photo.id} 
                 data-id={photo.id}
                 onTouchStart={(e) => handlePressStart(e, e.touches[0].clientX, e.touches[0].clientY, photo)}
                 onTouchMove={(e) => handlePressMove(e, e.touches[0].clientX, e.touches[0].clientY)}
-                onTouchEnd={(e) => handlePressEnd(photo)}
+                onTouchEnd={() => handlePressEnd(photo)}
                 onTouchCancel={handlePressCancel}
                 onMouseDown={(e) => handlePressStart(e, e.clientX, e.clientY, photo)}
                 onMouseMove={(e) => handlePressMove(e, e.clientX, e.clientY)}
@@ -1080,22 +1149,23 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                // isolate 클래스 및 [mask-image:radial-gradient(white,black)] 추가로 서브픽셀 찌꺼기 완벽 클리핑 보장
-                className={`masonry-item isolate relative group cursor-pointer overflow-hidden rounded-2xl bg-black shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu [mask-image:radial-gradient(white,black)]
+                // 캡슐화 버그 해결: mask-image 속성을 제거하여 원본 비율(1열) 또는 정사각형 비율(다열)을 정상적으로 렌더링하도록 롤백
+                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-black shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id 
                       ? (targetActionType === 'group' ? 'ring-4 ring-emerald-400/80 scale-105 shadow-[0_0_40px_rgba(52,211,113,0.3)] z-40' : 'ring-4 ring-white z-40') 
                       : ''
                   }
+                  ${gridColumns > 1 ? 'aspect-square' : ''}
                 `}
               >
-                {/* 에폭시 코팅 1: 가장자리 찌꺼기 완벽 제거를 위한 1.5px 솔리드 블랙 이너 섀도우 포함, 깊은 입체감 */}
-                <div className="absolute inset-0 pointer-events-none z-[25] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9),inset_0_0_0_1.5px_rgba(0,0,0,1)]"></div>
-                {/* 에폭시 코팅 2: 사선으로 부드럽게 떨어지는 굴절 빛반사 */}
+                {/* 찌꺼기 방지를 위한 2.5px 앱 배경색 보더를 абсолю트 레이어로 물리적으로 덮어 찌꺼기를 원천 차단 */}
+                <div className="absolute -inset-[1.5px] pointer-events-none z-[25] rounded-[18px] border-[2.5px] border-[#050505] shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9)]"></div>
+                {/* 빛의 굴절과 반사 오버레이 */}
                 <div className="absolute inset-0 pointer-events-none z-[15] bg-gradient-to-br from-white/30 via-transparent to-black/80 opacity-60 mix-blend-overlay rounded-2xl"></div>
-                {/* 에폭시 코팅 3: 상단에 맺히는 극강의 곡선형 하이라이트 */}
                 <div className="absolute top-0 inset-x-0 h-[50%] pointer-events-none z-[15] bg-gradient-to-b from-white/20 to-transparent rounded-t-2xl mix-blend-screen opacity-80"></div>
 
+                {/* 다중 선택 모드 체크박스 */}
                 <div className={`absolute top-4 right-4 z-30 transition-all duration-500 ease-out ${isSelectionMode ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
                   <div className={`w-8 h-8 rounded-full border-[1.5px] flex items-center justify-center backdrop-blur-md transition-all duration-500 shadow-xl ${selectedPhotoIds.has(photo.id) ? 'bg-white/20 border-white shadow-[0_0_20px_rgba(255,255,255,0.4)]' : 'border-white/40 bg-black/40 hover:border-white/80 hover:bg-black/60'}`}>
                     <Check className={`w-5 h-5 text-white drop-shadow-[0_0_10px_rgba(255,255,255,1)] transition-all duration-300 ${selectedPhotoIds.has(photo.id) ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}`} strokeWidth={3} />
@@ -1104,8 +1174,8 @@ export default function App() {
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-10 pointer-events-none"></div>
                 
-                {/* rounded-2xl 제거 및 블럭 설정으로 부모 영역에 완벽히 마스킹되게 처리 */}
-                <img src={photo.url} alt="꾸루" loading="lazy" className="block w-full h-auto object-cover hover-scale pointer-events-none relative z-0" />
+                {/* 1열일 때는 원본 비율 유지를 위해 h-auto, 그 이상일 때는 1:1 크롭을 위해 h-full 지정 */}
+                <img src={photo.url} alt="꾸루" loading="lazy" className={`block w-full object-cover rounded-2xl hover-scale pointer-events-none relative z-0 ${gridColumns > 1 ? 'h-full absolute inset-0' : 'h-auto'}`} />
                 
                 <div className="absolute bottom-0 left-0 right-0 p-6 transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500 z-20 pointer-events-none">
                   <p className="text-white text-base font-serif-kr font-light">{new Date(photo.createdAt).toLocaleDateString()}</p>
