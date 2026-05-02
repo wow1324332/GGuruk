@@ -355,43 +355,62 @@ export default function App() {
   };
 
   const handleFileSelect = async (e) => {
-    const file = e.target.files[0];
-    if (!isAuthReady || !user || !activeAlbum) return;
-    if (!file.type.startsWith('image/')) {
+    const files = Array.from(e.target.files);
+    if (!isAuthReady || !user || !activeAlbum || files.length === 0) return;
+
+    // 모든 파일이 이미지인지 유효성 검사
+    const invalidFiles = files.filter(f => !f.type.startsWith('image/'));
+    if (invalidFiles.length > 0) {
       showToast('이미지 파일만 업로드 가능합니다.');
       return;
     }
-    setIsUploading(true);
-    setUploadProgress(10); 
-    
-    try {
-      // 1. 화면 렌더링을 위한 썸네일 생성 (빠르고 용량 작음)
-      const thumbBase64 = await smartCompressImage(file, false);
-      setUploadProgress(40);
-      
-      // 2. 다운로드 보관을 위한 고화질 이미지 생성 (1MB 리밋 내에서 최대한 원본 유지)
-      const highResBase64 = await smartCompressImage(file, true);
-      setUploadProgress(70);
 
-      // Firestore에 썸네일과 고화질 데이터 둘 다 저장
-      await addDoc(collection(db, 'photos'), {
-        url: thumbBase64,
-        originalUrl: highResBase64, // 고화질 데이터
-        createdAt: Date.now(),
-        fileName: file.name,
-        albumCode: activeAlbum,
-        uploaderId: user.uid
-      });
-      
-      setUploadProgress(100);
-      setIsUploading(false);
-      showToast('성공적으로 업로드되었습니다.');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    } catch (error) {
-      console.error("Upload error:", error);
-      setIsUploading(false);
-      showToast('업로드에 실패했습니다. 다시 시도해주세요.');
+    setIsUploading(true);
+    setUploadProgress(0);
+
+    let successCount = 0;
+    const totalFiles = files.length;
+
+    // 복수 파일 순차 업로드
+    for (let i = 0; i < totalFiles; i++) {
+      const file = files[i];
+      const baseProgress = (i / totalFiles) * 100;
+      const step = 100 / totalFiles;
+
+      try {
+        setUploadProgress(Math.round(baseProgress + step * 0.1));
+        const thumbBase64 = await smartCompressImage(file, false);
+        
+        setUploadProgress(Math.round(baseProgress + step * 0.4));
+        const highResBase64 = await smartCompressImage(file, true);
+        
+        setUploadProgress(Math.round(baseProgress + step * 0.7));
+        await addDoc(collection(db, 'photos'), {
+          url: thumbBase64,
+          originalUrl: highResBase64,
+          createdAt: Date.now(),
+          fileName: file.name,
+          albumCode: activeAlbum,
+          uploaderId: user.uid
+        });
+        
+        successCount++;
+        setUploadProgress(Math.round(baseProgress + step));
+      } catch (error) {
+        console.error("Upload error for file:", file.name, error);
+        if (error.code === 'resource-exhausted' || (error.message && error.message.includes('payload'))) {
+           showToast(`[${file.name}] 용량이 너무 커서 건너뛰었습니다.`);
+        } else {
+           showToast(`[${file.name}] 업로드에 실패했습니다.`);
+        }
+      }
     }
+
+    setIsUploading(false);
+    if (successCount > 0) {
+      showToast(`총 ${successCount}장이 성공적으로 업로드되었습니다.`);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleDeleteSelected = async () => {
@@ -893,7 +912,7 @@ export default function App() {
       </header>
       
       <main className="max-w-[1600px] mx-auto px-6 py-12 pb-32 relative">
-        <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+        <input type="file" accept="image/*" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 space-y-6 md:space-y-0">
           <div>
             <h2 className="text-4xl md:text-5xl font-cute font-bold mb-4 tracking-tighter uppercase">GGURUK</h2>
