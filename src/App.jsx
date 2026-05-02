@@ -54,6 +54,7 @@ export default function App() {
   const [photos, setPhotos] = useState([]);
   
   const [isLoginMode, setIsLoginMode] = useState(true);
+  const [rememberMe, setRememberMe] = useState(false); // 아이디/비번 기억하기 상태 추가
   const [albumCode, setAlbumCode] = useState('');
   const [albumPassword, setAlbumPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -164,6 +165,19 @@ export default function App() {
     return () => unsubscribe();
   }, [user, isAuthReady, view, activeAlbum]);
 
+  // 로그인 화면 진입 시, 기억된 정보가 있으면 자동 완성
+  useEffect(() => {
+    if (view === 'auth' && isLoginMode) {
+      const savedCode = localStorage.getItem('gguruk_saved_code');
+      const savedPwd = localStorage.getItem('gguruk_saved_pwd');
+      if (savedCode && savedPwd) {
+        setAlbumCode(savedCode);
+        setAlbumPassword(savedPwd);
+        setRememberMe(true);
+      }
+    }
+  }, [view, isLoginMode]);
+
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 3000);
@@ -207,6 +221,15 @@ export default function App() {
         if (albumDocSnap.exists()) {
           const albumData = albumDocSnap.data();
           if (albumData.password === pwd) {
+            // 정보 기억하기 로직
+            if (rememberMe) {
+              localStorage.setItem('gguruk_saved_code', code);
+              localStorage.setItem('gguruk_saved_pwd', pwd);
+            } else {
+              localStorage.removeItem('gguruk_saved_code');
+              localStorage.removeItem('gguruk_saved_pwd');
+            }
+            
             setActiveAlbum(code);
             setAlbumCode('');
             setAlbumPassword('');
@@ -612,6 +635,20 @@ export default function App() {
                   placeholder="••••••••"
                   required
                 />
+                {isLoginMode && (
+                  <div className="flex items-center space-x-2 mt-3 px-1">
+                    <input
+                      type="checkbox"
+                      id="rememberMe"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="w-4 h-4 rounded bg-zinc-900 border-zinc-700 cursor-pointer accent-zinc-500"
+                    />
+                    <label htmlFor="rememberMe" className="text-zinc-500 text-xs font-serif-kr cursor-pointer select-none hover:text-zinc-400 transition-colors">
+                      아이디와 비밀번호 기억하기
+                    </label>
+                  </div>
+                )}
               </div>
               {authError && (
                 <div className="flex items-center space-x-2 text-red-400 text-sm bg-red-950/50 p-4 rounded-xl border border-red-500/30 font-serif-kr">
