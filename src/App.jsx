@@ -30,7 +30,8 @@ import {
   Key,
   Download,
   Minus,
-  Check
+  Check,
+  Trash2
 } from 'lucide-react';
 
 // --- 회원님 전용 외부 Firebase 환경 변수 연동 ---
@@ -89,6 +90,15 @@ export default function App() {
   const isLongPress = useRef(false);
   const isDragging = useRef(false);
   const justLongPressed = useRef(false);
+
+  // 뷰어용 확대/축소 상태 (Pinch Zoom)
+  const [viewerScale, setViewerScale] = useState(1);
+  const [viewerPos, setViewerPos] = useState({ x: 0, y: 0 });
+  const viewerTouchStartDist = useRef(0);
+  const viewerTouchStartScale = useRef(1);
+  const viewerLastPos = useRef({ x: 0, y: 0 });
+  const isDraggingViewer = useRef(false);
+  const [viewerDeleteTarget, setViewerDeleteTarget] = useState(null);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e) => {
@@ -176,6 +186,14 @@ export default function App() {
       }
     }
   }, [view, isLoginMode]);
+
+  // 뷰어 열릴 때 줌/위치 초기화
+  useEffect(() => {
+    if (selectedPhoto) {
+      setViewerScale(1);
+      setViewerPos({ x: 0, y: 0 });
+    }
+  }, [selectedPhoto]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -351,6 +369,29 @@ export default function App() {
     }
   };
 
+  const handleDeletePhoto = async (photoId) => {
+    if (!isAuthReady || !user) return;
+    try {
+      await deleteDoc(doc(db, 'photos', photoId));
+      setSelectedPhoto(null);
+      showToast('사진이 삭제되었습니다.');
+    } catch (error) {
+      console.error("Error deleting photo:", error);
+      showToast('삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleDownloadOriginal = (e, url, fileName) => {
+    e.stopPropagation();
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName || `gguruk_${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- 모바일 호환 완벽한 부드러운 드래그 앤 드롭 & 다중 선택 핸들러 ---
   const handlePressStart = (e, clientX, clientY, photo) => {
     if (isSelectionMode) return; 
     
@@ -475,6 +516,43 @@ export default function App() {
     }
     
     setSelectedPhoto(photo);
+  };
+
+  // --- 뷰어 핀치 줌 핸들러 ---
+  const handleViewerTouchStart = (e) => {
+    isDraggingViewer.current = true;
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      viewerTouchStartDist.current = dist;
+      viewerTouchStartScale.current = viewerScale;
+    } else if (e.touches.length === 1 && viewerScale > 1) {
+       viewerLastPos.current = { x: e.touches[0].clientX - viewerPos.x, y: e.touches[0].clientY - viewerPos.y };
+    }
+  };
+
+  const handleViewerTouchMove = (e) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const newScale = Math.max(1, Math.min(viewerTouchStartScale.current * (dist / viewerTouchStartDist.current), 5));
+      setViewerScale(newScale);
+    } else if (e.touches.length === 1 && viewerScale > 1) {
+       setViewerPos({
+          x: e.touches[0].clientX - viewerLastPos.current.x,
+          y: e.touches[0].clientY - viewerLastPos.current.y
+       });
+    }
+  };
+
+  const handleViewerTouchEnd = () => {
+     isDraggingViewer.current = false;
+     if (viewerScale < 1) setViewerScale(1);
+     if (viewerScale === 1) setViewerPos({ x: 0, y: 0 });
   };
 
   const handleMainClick = () => {
@@ -732,7 +810,7 @@ export default function App() {
       {/* 자유로운 드래그를 위한 고스트 이미지 레이어 */}
       {draggedPhotoId && isDragging.current && ghostImage.current && (
         <div
-          className="fixed z-[100] pointer-events-none rounded-xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90"
+          className="fixed z-[100] pointer-events-none rounded-2xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90"
           style={{
             width: ghostSize.current.width,
             height: ghostSize.current.height,
@@ -803,12 +881,20 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
-                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-xl bg-zinc-900 shadow-2xl transition-all duration-500 ease-out
+                // 에폭시 퀄리티 극대화 및 서브픽셀 찌꺼기 방지를 위한 속성 조정 (rounded-2xl)
+                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-zinc-900 shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id ? 'ring-4 ring-white z-40' : ''}
                 `}
               >
-                {/* 다중 선택 모드 체크박스 - 조건부 렌더링을 삭제하여 버벅임 제거, 투명도와 스케일로 부드럽게 전환. 헤더 아래로 들어가게 z-30 적용 */}
+                {/* 에폭시 코팅 1: 가장자리 찌꺼기 완벽 제거를 위한 1px 이너 섀도우 포함, 깊은 입체감 */}
+                <div className="absolute inset-0 pointer-events-none z-[15] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9),inset_0_0_0_1px_rgba(0,0,0,0.7)]"></div>
+                {/* 에폭시 코팅 2: 사선으로 부드럽게 떨어지는 굴절 빛반사 */}
+                <div className="absolute inset-0 pointer-events-none z-[15] bg-gradient-to-br from-white/30 via-transparent to-black/80 opacity-60 mix-blend-overlay rounded-2xl"></div>
+                {/* 에폭시 코팅 3: 상단에 맺히는 극강의 곡선형 하이라이트 */}
+                <div className="absolute top-0 inset-x-0 h-[50%] pointer-events-none z-[15] bg-gradient-to-b from-white/20 to-transparent rounded-t-2xl mix-blend-screen opacity-80"></div>
+
+                {/* 다중 선택 모드 체크박스 */}
                 <div className={`absolute top-4 right-4 z-30 transition-all duration-500 ease-out ${isSelectionMode ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
                   <div className={`w-8 h-8 rounded-full border-[1.5px] flex items-center justify-center backdrop-blur-md transition-all duration-500 shadow-xl ${selectedPhotoIds.has(photo.id) ? 'bg-white/20 border-white shadow-[0_0_20px_rgba(255,255,255,0.4)]' : 'border-white/40 bg-black/40 hover:border-white/80 hover:bg-black/60'}`}>
                     <Check className={`w-5 h-5 text-white drop-shadow-[0_0_10px_rgba(255,255,255,1)] transition-all duration-300 ${selectedPhotoIds.has(photo.id) ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}`} strokeWidth={3} />
@@ -816,7 +902,10 @@ export default function App() {
                 </div>
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-10 pointer-events-none"></div>
-                <img src={photo.url} alt="꾸루" loading="lazy" className="w-full h-auto object-cover hover-scale pointer-events-none" />
+                
+                {/* 이미지 자체에도 rounded-2xl 적용하여 곡률 일치 */}
+                <img src={photo.url} alt="꾸루" loading="lazy" className="w-full h-auto object-cover rounded-2xl hover-scale pointer-events-none" />
+                
                 <div className="absolute bottom-0 left-0 right-0 p-6 transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500 z-20 pointer-events-none">
                   <p className="text-white text-base font-serif-kr font-light">{new Date(photo.createdAt).toLocaleDateString()}</p>
                 </div>
@@ -826,18 +915,19 @@ export default function App() {
         )}
       </main>
 
-      {/* 우측 하단 플로팅 액션 버튼 (FAB) */}
+      {/* 우측 하단 플로팅 액션 버튼 (FAB) - 기포 제거, 시네마틱 폰트 적용된 입체 물방울 디자인 */}
       {photos.length > 0 && !isSelectionMode && (
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={isUploading}
-          className="fixed bottom-8 right-8 z-40 w-14 h-14 bg-white/90 backdrop-blur-md text-black rounded-full shadow-[0_0_30px_rgba(255,255,255,0.4)] flex items-center justify-center hover:scale-105 hover:bg-white transition-all duration-300 disabled:opacity-50"
+          className="fixed bottom-8 right-8 z-40 w-16 h-16 bg-gradient-to-br from-white/10 to-transparent backdrop-blur-xl rounded-full flex items-center justify-center transition-all duration-500 ease-out disabled:opacity-50 group shadow-[0_15px_35px_rgba(0,0,0,0.8),inset_0_8px_15px_rgba(255,255,255,0.4),inset_0_-8px_15px_rgba(0,0,0,0.6),inset_0_0_10px_rgba(255,255,255,0.1)] hover:scale-110 hover:shadow-[0_20px_40px_rgba(0,0,0,0.9),inset_0_10px_20px_rgba(255,255,255,0.6),inset_0_-10px_20px_rgba(0,0,0,0.7),inset_0_0_15px_rgba(255,255,255,0.2)]"
         >
-          <span className="text-3xl font-light leading-none mb-1">+</span>
+          {/* 시네마틱 세리프 폰트 적용된 '+' 마크 */}
+          <span className="font-cinzel text-4xl font-normal leading-none relative top-[1px] drop-shadow-[0_2px_5px_rgba(0,0,0,0.8)] group-hover:drop-shadow-[0_0_15px_rgba(255,255,255,1)] transition-all duration-500 z-10 text-white/90">+</span>
         </button>
       )}
 
-      {/* 다중 선택 시 하단 삭제 컨트롤 바 - 줄바꿈 방지 및 시네마틱 투명 효과 추가, 폰트 변경 */}
+      {/* 다중 선택 시 하단 삭제 컨트롤 바 */}
       {isSelectionMode && (
         <div className="fixed bottom-8 left-0 right-0 z-50 flex justify-center animate-slide-up px-4 pointer-events-none">
           <div className="bg-black/50 backdrop-blur-3xl border border-white/15 rounded-full px-5 py-3.5 flex items-center space-x-5 shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_0_20px_rgba(255,255,255,0.05)] pointer-events-auto whitespace-nowrap">
@@ -868,6 +958,34 @@ export default function App() {
         </div>
       )}
 
+      {/* 뷰어 삭제 전용 커스텀 모달 */}
+      {viewerDeleteTarget && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl text-center max-w-sm w-full mx-4 animate-[slideUpFade_0.3s_ease-out]">
+            <Trash2 className="w-8 h-8 text-red-500 mx-auto mb-4" />
+            <h3 className="text-xl text-white font-serif-kr font-light mb-8 tracking-wide">정말로 이 사진을<br/>삭제하시겠습니까?</h3>
+            <div className="flex justify-center space-x-3">
+              <button
+                onClick={() => setViewerDeleteTarget(null)}
+                className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-sm tracking-widest uppercase"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                   await handleDeletePhoto(viewerDeleteTarget);
+                   setViewerDeleteTarget(null);
+                }}
+                className="flex-1 px-4 py-3 rounded-xl bg-red-500 text-white font-montserrat font-bold hover:bg-red-400 transition-colors text-sm tracking-widest uppercase"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 앱 로그아웃용 커스텀 모달 */}
       {isLogoutConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md">
           <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl text-center max-w-sm w-full mx-4 animate-[slideUpFade_0.3s_ease-out]">
@@ -891,16 +1009,54 @@ export default function App() {
         </div>
       )}
 
+      {/* 시네마틱 이미지 뷰어 (핀치 줌, 삭제, 원본 다운로드 기능 포함) */}
       {selectedPhoto && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/98 backdrop-blur-2xl" onClick={() => setSelectedPhoto(null)}>
-          <div className="absolute top-0 right-0 p-6">
-            <button className="p-4 text-zinc-400 hover:text-white"><X className="w-8 h-8" /></button>
-          </div>
-          <img src={selectedPhoto.url} className="max-w-[90vw] max-h-[85vh] object-contain shadow-2xl" onClick={(e) => e.stopPropagation()} />
-          <div className="absolute bottom-0 left-0 right-0 p-10 flex justify-between items-end">
-            <div className="text-white">
-              <p className="text-2xl font-serif-kr font-light">{new Date(selectedPhoto.createdAt).toLocaleString()}</p>
+        <div className="fixed inset-0 z-[200] flex flex-col bg-black/95 backdrop-blur-3xl animate-[cinematicEntrance_0.4s_ease-out]">
+          
+          <div className="absolute top-0 left-0 right-0 z-[210] flex justify-between items-center p-5 md:p-6 bg-gradient-to-b from-black/80 to-transparent">
+            <p className="text-white font-serif-kr text-sm md:text-base font-light tracking-wider drop-shadow-md">
+              {new Date(selectedPhoto.createdAt).toLocaleString()}
+            </p>
+            <div className="flex items-center space-x-3 md:space-x-4">
+              <button 
+                onClick={(e) => handleDownloadOriginal(e, selectedPhoto.url, selectedPhoto.fileName)} 
+                className="p-2.5 md:p-3 text-zinc-300 hover:text-white transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
+              >
+                <Download className="w-4 h-4 md:w-5 md:h-5" />
+              </button>
+              <button 
+                onClick={() => setViewerDeleteTarget(selectedPhoto.id)} 
+                className="p-2.5 md:p-3 text-red-400 hover:text-red-300 transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
+              >
+                <Trash2 className="w-4 h-4 md:w-5 md:h-5" />
+              </button>
+              <button 
+                onClick={() => setSelectedPhoto(null)} 
+                className="p-2.5 md:p-3 text-zinc-300 hover:text-white transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
+              >
+                <X className="w-4 h-4 md:w-5 md:h-5" />
+              </button>
             </div>
+          </div>
+
+          <div
+            className="flex-1 overflow-hidden relative flex items-center justify-center touch-none"
+            style={{ touchAction: 'none' }}
+            onTouchStart={handleViewerTouchStart}
+            onTouchMove={handleViewerTouchMove}
+            onTouchEnd={handleViewerTouchEnd}
+            onClick={() => { /* 배경 터치 시 줌 아웃이나 닫기 등을 원할 경우 추가 가능 */ }}
+          >
+            <img
+              src={selectedPhoto.url}
+              style={{
+                transform: `translate(${viewerPos.x}px, ${viewerPos.y}px) scale(${viewerScale})`,
+                transition: isDraggingViewer.current ? 'none' : 'transform 0.2s ease-out'
+              }}
+              className="max-w-[100vw] max-h-[100vh] object-contain shadow-2xl transform-gpu"
+              alt="viewer"
+              onClick={(e) => e.stopPropagation()} 
+            />
           </div>
         </div>
       )}
