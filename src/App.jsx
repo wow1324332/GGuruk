@@ -1227,7 +1227,7 @@ export default function App() {
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
                 // 1열(gridColumns가 1)일 때는 비율 유지, 그 이상일 때는 1:1 종횡비로 크롭 고정
-                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-black shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
+                className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-[#050505] shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
                   ${targetPhotoId === photo.id && draggedPhotoId !== photo.id 
                       ? (targetActionType === 'group' ? 'ring-4 ring-emerald-400/80 scale-105 shadow-[0_0_40px_rgba(52,211,113,0.3)] z-40' : 'ring-4 ring-white z-40') 
@@ -1236,11 +1236,11 @@ export default function App() {
                   ${gridColumns > 1 ? 'aspect-square' : ''}
                 `}
               >
-                {/* 1.5px 솔리드 블랙 이너 섀도우: 찌꺼기 방지를 위해 안쪽으로 덮어씀 (에폭시 질감 유지) */}
-                <div className="absolute inset-0 pointer-events-none z-[25] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.3),inset_0_-10px_30px_rgba(0,0,0,0.9),inset_0_0_0_1.5px_#000]"></div>
+                {/* 억지스러운 두꺼운 블랙 섀도우를 완벽히 제거하고, 가장자리 1px 투명 화이트 링만 남겨 원래 사진의 비율과 깔끔한 에폭시 질감만 남김 */}
+                <div className="absolute inset-0 pointer-events-none z-[25] rounded-2xl shadow-[inset_0_4px_20px_rgba(255,255,255,0.2),inset_0_-10px_30px_rgba(0,0,0,0.8)] ring-1 ring-inset ring-white/10"></div>
                 {/* 빛의 굴절과 반사 오버레이 */}
-                <div className="absolute inset-0 pointer-events-none z-[15] bg-gradient-to-br from-white/30 via-transparent to-black/80 opacity-60 mix-blend-overlay rounded-2xl"></div>
-                <div className="absolute top-0 inset-x-0 h-[50%] pointer-events-none z-[15] bg-gradient-to-b from-white/20 to-transparent rounded-t-2xl mix-blend-screen opacity-80"></div>
+                <div className="absolute inset-0 pointer-events-none z-[15] bg-gradient-to-br from-white/20 via-transparent to-black/60 opacity-60 mix-blend-overlay rounded-2xl"></div>
+                <div className="absolute top-0 inset-x-0 h-[50%] pointer-events-none z-[15] bg-gradient-to-b from-white/10 to-transparent rounded-t-2xl mix-blend-screen opacity-80"></div>
 
                 {/* 다중 선택 모드 체크박스 */}
                 <div className={`absolute top-4 right-4 z-30 transition-all duration-500 ease-out ${isSelectionMode ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}>
@@ -1251,8 +1251,8 @@ export default function App() {
 
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-10 pointer-events-none"></div>
                 
-                {/* 1열일 때는 원본 비율 유지를 위해 h-auto, 그 이상일 때는 1:1 크롭을 위해 h-full 지정 */}
-                <img src={photo.url} alt="꾸루" loading="lazy" className={`block w-full object-cover rounded-2xl hover-scale pointer-events-none relative z-0 ${gridColumns > 1 ? 'h-full absolute inset-0' : 'h-auto'}`} />
+                {/* 1열일 때는 원본 비율 유지를 위해 h-auto, 그 이상일 때는 1:1 크롭을 위해 h-full 지정. 이중 라운딩 방지를 위해 부모 클리핑에 의존 */}
+                <img src={photo.url} alt="꾸루" loading="lazy" className={`block w-full object-cover hover-scale pointer-events-none relative z-0 transform-gpu ${gridColumns > 1 ? 'h-full absolute inset-0' : 'h-auto'}`} />
                 
                 <div className="absolute bottom-0 left-0 right-0 p-6 transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-500 z-20 pointer-events-none">
                   <p className="text-white text-base font-serif-kr font-light">{new Date(photo.createdAt).toLocaleDateString()}</p>
