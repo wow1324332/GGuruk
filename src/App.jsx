@@ -17,6 +17,13 @@ import {
   updateDoc
 } from 'firebase/firestore';
 import { 
+  getStorage, 
+  ref, 
+  uploadBytes, 
+  getDownloadURL, 
+  deleteObject 
+} from 'firebase/storage';
+import { 
   Camera, 
   LogOut, 
   Image as ImageIcon, 
@@ -31,7 +38,12 @@ import {
   Download,
   Minus,
   Check,
-  Trash2
+  Trash2,
+  Menu,
+  Folder,
+  FolderOpen,
+  FolderMinus,
+  FolderPlus
 } from 'lucide-react';
 
 // --- 회원님 전용 외부 Firebase 환경 변수 연동 ---
@@ -47,6 +59,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 export default function App() {
   const [view, setView] = useState('intro');
@@ -77,6 +90,13 @@ export default function App() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedPhotoIds, setSelectedPhotoIds] = useState(new Set());
 
+  // 앨범(폴더) 기능 관련 상태 추가
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [selectedFolder, setSelectedFolder] = useState(null);
+  const [groupModalState, setGroupModalState] = useState(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [targetActionType, setTargetActionType] = useState(null); // 'reorder' | 'group' | 'remove' | null
+
   // 드래그 앤 드롭 및 롱프레스를 위한 상태와 Refs
   const [draggedPhotoId, setDraggedPhotoId] = useState(null);
   const [targetPhotoId, setTargetPhotoId] = useState(null);
@@ -99,6 +119,15 @@ export default function App() {
   const viewerLastPos = useRef({ x: 0, y: 0 });
   const isDraggingViewer = useRef(false);
   const [viewerDeleteTarget, setViewerDeleteTarget] = useState(null);
+  
+  // 뷰어 내 앨범 이동 모달 상태
+  const [isMoveFolderModalOpen, setIsMoveFolderModalOpen] = useState(false);
+
+  // 현재 활성화된 고유 폴더(앨범) 목록 추출
+  const folders = [...new Set(photos.map(p => p.folderName).filter(Boolean))];
+  
+  // 현재 선택된 폴더에 따라 보여질 사진 필터링
+  const displayPhotos = selectedFolder ? photos.filter(p => p.folderName === selectedFolder) : photos;
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e) => {
@@ -187,7 +216,6 @@ export default function App() {
     }
   }, [view, isLoginMode]);
 
-  // 뷰어 열릴 때 줌/위치 초기화
   useEffect(() => {
     if (selectedPhoto) {
       setViewerScale(1);
@@ -286,12 +314,10 @@ export default function App() {
     setIsLogoutConfirmOpen(false);
     setIsSelectionMode(false);
     setSelectedPhotoIds(new Set());
+    setSelectedFolder(null);
+    setIsSidebarOpen(false);
   };
 
-  /**
-   * 고화질 유지를 위한 스마트 압축 로직
-   * Firestore 1MB 제한(약 1,048,576 byte)을 피하면서 최대 해상도 유지
-   */
   const smartCompressImage = (file, isHighQuality = false) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -304,8 +330,6 @@ export default function App() {
           let width = img.width;
           let height = img.height;
           
-          // 고화질 원본 백업용: 최대 2400px (4K 근접) / 품질 0.9 (거의 무손실)
-          // 화면 표시(썸네일)용: 최대 800px / 품질 0.65
           const maxWidth = isHighQuality ? 2400 : 800;
           const maxHeight = isHighQuality ? 2400 : 800;
           let quality = isHighQuality ? 0.9 : 0.65;
@@ -327,13 +351,10 @@ export default function App() {
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
 
-          // Firestore 1MB 제한 방어 로직 수정: 
-          // 썸네일(약 150KB) + 원본(약 800KB) + 메타데이터 합이 1,048,576 Bytes 이내여야 함.
           const getSafeDataUrl = () => {
             const targetLimit = isHighQuality ? 800000 : 150000;
             let dataUrl = canvas.toDataURL('image/jpeg', quality);
             
-            // 품질과 해상도를 같이 낮추어 더 공격적으로 용량을 깎음
             while (dataUrl.length > targetLimit && quality > 0.2) {
               quality -= 0.1;
               width = Math.round(width * 0.85);
@@ -358,7 +379,6 @@ export default function App() {
     const files = Array.from(e.target.files);
     if (!isAuthReady || !user || !activeAlbum || files.length === 0) return;
 
-    // 모든 파일이 이미지인지 유효성 검사
     const invalidFiles = files.filter(f => !f.type.startsWith('image/'));
     if (invalidFiles.length > 0) {
       showToast('이미지 파일만 업로드 가능합니다.');
@@ -371,7 +391,6 @@ export default function App() {
     let successCount = 0;
     const totalFiles = files.length;
 
-    // 복수 파일 순차 업로드
     for (let i = 0; i < totalFiles; i++) {
       const file = files[i];
       const baseProgress = (i / totalFiles) * 100;
@@ -391,7 +410,8 @@ export default function App() {
           createdAt: Date.now(),
           fileName: file.name,
           albumCode: activeAlbum,
-          uploaderId: user.uid
+          uploaderId: user.uid,
+          folderName: selectedFolder || null 
         });
         
         successCount++;
@@ -441,7 +461,6 @@ export default function App() {
     }
   };
 
-  // Base64 데이터를 다운로드 가능한 파일로 변환하여 다운로드 처리
   const handleDownloadOriginal = (e, photo) => {
     e.stopPropagation();
     try {
@@ -477,12 +496,13 @@ export default function App() {
 
     if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
     
+    // 딜레이를 250ms로 단축하여 빠르고 부드러운 반응 제공
     pressTimerRef.current = setTimeout(() => {
       isLongPress.current = true;
       setDraggedPhotoId(photo.id);
       setDragPos({ x: clientX, y: clientY });
       if (navigator.vibrate) navigator.vibrate(50);
-    }, 400); 
+    }, 250); 
   };
 
   const handlePressMove = (e, clientX, clientY) => {
@@ -504,17 +524,29 @@ export default function App() {
       if (isDragging.current) {
         setDragPos({ x: clientX, y: clientY });
 
-        const elem = document.elementFromPoint(clientX, clientY);
-        const targetItem = elem?.closest('.masonry-item');
-        if (targetItem) {
-          const targetId = targetItem.getAttribute('data-id');
-          if (targetId && targetId !== draggedPhotoId) {
-            setTargetPhotoId(targetId);
+        if (selectedFolder && clientY < 120) {
+          setTargetActionType('remove');
+          setTargetPhotoId(null);
+        } else {
+          const elem = document.elementFromPoint(clientX, clientY);
+          const targetItem = elem?.closest('.masonry-item');
+          if (targetItem) {
+            const targetId = targetItem.getAttribute('data-id');
+            if (targetId && targetId !== draggedPhotoId) {
+              setTargetPhotoId(targetId);
+              
+              const rect = targetItem.getBoundingClientRect();
+              const relativeY = clientY - rect.top;
+              const isCenter = relativeY > rect.height * 0.2 && relativeY < rect.height * 0.8;
+              setTargetActionType(isCenter ? 'group' : 'reorder');
+            } else {
+              setTargetPhotoId(null);
+              setTargetActionType(null);
+            }
           } else {
             setTargetPhotoId(null);
+            setTargetActionType(null);
           }
-        } else {
-          setTargetPhotoId(null);
         }
       }
     }
@@ -525,19 +557,33 @@ export default function App() {
 
     if (isLongPress.current) {
       if (isDragging.current) {
-        if (targetPhotoId) {
-          const dragged = photos.find(p => p.id === draggedPhotoId);
+        const dragged = photos.find(p => p.id === draggedPhotoId);
+        
+        if (targetActionType === 'remove' && dragged) {
+          try {
+            await updateDoc(doc(db, 'photos', dragged.id), { folderName: null });
+            showToast('앨범에서 꺼내졌습니다.');
+          } catch (error) {
+            console.error("Remove from folder failed", error);
+            showToast('앨범에서 꺼내기에 실패했습니다.');
+          }
+        } else if (targetPhotoId) {
           const target = photos.find(p => p.id === targetPhotoId);
           if (dragged && target) {
-            try {
-              const draggedRef = doc(db, 'photos', dragged.id);
-              const targetRef = doc(db, 'photos', target.id);
-              await updateDoc(draggedRef, { createdAt: target.createdAt });
-              await updateDoc(targetRef, { createdAt: dragged.createdAt });
-              showToast('순서가 변경되었습니다.');
-            } catch (error) {
-              console.error("Reorder failed", error);
-              showToast('순서 변경에 실패했습니다.');
+            if (targetActionType === 'group') {
+              setNewFolderName(target.folderName || '');
+              setGroupModalState({ dragged, target });
+            } else {
+              try {
+                const draggedRef = doc(db, 'photos', dragged.id);
+                const targetRef = doc(db, 'photos', target.id);
+                await updateDoc(draggedRef, { createdAt: target.createdAt });
+                await updateDoc(targetRef, { createdAt: dragged.createdAt });
+                showToast('순서가 변경되었습니다.');
+              } catch (error) {
+                console.error("Reorder failed", error);
+                showToast('순서 변경에 실패했습니다.');
+              }
             }
           }
         }
@@ -555,6 +601,7 @@ export default function App() {
     document.body.style.touchAction = '';
     setDraggedPhotoId(null);
     setTargetPhotoId(null);
+    setTargetActionType(null);
   };
 
   const handlePressCancel = () => {
@@ -567,6 +614,7 @@ export default function App() {
     isDragging.current = false;
     setDraggedPhotoId(null);
     setTargetPhotoId(null);
+    setTargetActionType(null);
   };
 
   const handleClick = (e, photo) => {
@@ -586,6 +634,23 @@ export default function App() {
     }
     
     setSelectedPhoto(photo);
+  };
+
+  const handleCreateGroup = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim() || !groupModalState) return;
+    
+    const folderName = newFolderName.trim();
+    try {
+      await updateDoc(doc(db, 'photos', groupModalState.dragged.id), { folderName });
+      await updateDoc(doc(db, 'photos', groupModalState.target.id), { folderName });
+      showToast(`'${folderName}' 앨범이 생성되었습니다.`);
+      setGroupModalState(null);
+      setNewFolderName('');
+    } catch (error) {
+      console.error("Error creating group:", error);
+      showToast('앨범 생성 중 오류가 발생했습니다.');
+    }
   };
 
   // --- 뷰어 핀치 줌 핸들러 ---
@@ -626,7 +691,7 @@ export default function App() {
   };
 
   const handleMainClick = () => {
-    // 배경 클릭 시 동작 유지 (선택 모드는 하단 Cancel 버튼으로 명시적 취소)
+    // 배경 클릭 시 동작 유지
   };
 
   const globalStyles = `
@@ -856,9 +921,10 @@ export default function App() {
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-white/30 relative" onClick={handleMainClick}>
       <style>{globalStyles}</style>
       
+      {/* 폰트/사이즈/여백이 최적화된 토스트 팝업 */}
       {toastMessage && (
-        <div className="fixed bottom-10 left-1/2 z-50 bg-[#111111]/95 backdrop-blur-xl text-white px-10 py-4 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] border border-white/10 flex items-center space-x-3 animate-cinematic-toast font-serif-kr font-light tracking-wide whitespace-nowrap min-w-max">
-          <Info className="w-4 h-4 text-zinc-400 flex-shrink-0" />
+        <div className="fixed bottom-10 left-1/2 z-[200] bg-[#111111]/95 backdrop-blur-xl text-white px-8 py-3.5 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.8)] border border-white/10 flex items-center space-x-3 animate-cinematic-toast font-serif-kr font-light text-[11px] tracking-[0.2em] uppercase whitespace-nowrap min-w-max">
+          <Info className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}
@@ -877,25 +943,79 @@ export default function App() {
         </div>
       )}
 
-      {/* 자유로운 드래그를 위한 고스트 이미지 레이어 */}
+      {/* 앨범 내에서 사진 드래그 시: 앨범에서 꺼내기 드롭존 */}
+      {selectedFolder && draggedPhotoId && isDragging.current && (
+        <div className={`fixed top-0 left-0 right-0 h-32 z-[110] flex flex-col items-center justify-end pb-6 transition-all duration-500 ease-out pointer-events-none ${targetActionType === 'remove' ? 'bg-black/80 backdrop-blur-2xl border-b border-white/20 shadow-[0_30px_60px_rgba(0,0,0,0.9)]' : 'bg-black/40 backdrop-blur-sm border-b border-transparent'}`}>
+          <div className={`flex flex-col items-center transition-all duration-500 transform ${targetActionType === 'remove' ? 'scale-110 -translate-y-2' : 'scale-100 opacity-50'}`}>
+             <FolderMinus className={`w-8 h-8 mb-3 transition-all duration-500 ${targetActionType === 'remove' ? 'text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.8)]' : 'text-zinc-400'}`} strokeWidth={targetActionType === 'remove' ? 2 : 1.5} />
+             <span className={`font-serif-kr text-[11px] tracking-[0.3em] font-light transition-colors duration-500 uppercase ${targetActionType === 'remove' ? 'text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]' : 'text-zinc-400'}`}>앨범에서 꺼내기</span>
+          </div>
+        </div>
+      )}
+
+      {/* 자유로운 드래그를 위한 고스트 이미지 레이어 (하드웨어 가속 및 z-index 최상단 적용으로 부드러움 향상) */}
       {draggedPhotoId && isDragging.current && ghostImage.current && (
         <div
-          className="fixed z-[100] pointer-events-none rounded-2xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90"
+          className="fixed z-[9999] pointer-events-none rounded-2xl overflow-hidden shadow-2xl ring-4 ring-white/50 opacity-90 will-change-transform"
           style={{
             width: ghostSize.current.width,
             height: ghostSize.current.height,
-            left: dragPos.x - dragOffset.current.x,
-            top: dragPos.y - dragOffset.current.y,
-            transform: 'scale(1.05)',
+            top: 0,
+            left: 0,
+            transform: `translate3d(${dragPos.x - dragOffset.current.x}px, ${dragPos.y - dragOffset.current.y}px, 0) scale(1.05)`,
           }}
         >
           <img src={ghostImage.current} alt="dragging" className="w-full h-full object-cover" />
         </div>
       )}
+
+      {/* 시네마틱 좌측 사이드바 */}
+      <div 
+        className={`fixed inset-y-0 left-0 z-[60] w-64 bg-black/90 backdrop-blur-2xl border-r border-white/10 transform transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      >
+        <div className="p-6 border-b border-white/10 flex justify-between items-center">
+          <h2 className="text-xs font-montserrat tracking-[0.4em] font-medium text-zinc-500">ALBUMS</h2>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-2 text-zinc-400 hover:text-white transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto py-4">
+          <button
+            onClick={() => { setSelectedFolder(null); setIsSidebarOpen(false); }}
+            className={`w-full text-left px-6 py-4 flex items-center space-x-3 transition-colors ${selectedFolder === null ? 'bg-white/10 text-white' : 'text-zinc-400 hover:bg-white/5 hover:text-white'}`}
+          >
+            <FolderOpen className="w-4 h-4" />
+            <span className="font-cute text-sm tracking-wider pt-0.5">ALL PHOTOS</span>
+          </button>
+          
+          {folders.map(folder => (
+            <button
+              key={folder}
+              onClick={() => { setSelectedFolder(folder); setIsSidebarOpen(false); }}
+              className={`w-full text-left px-6 py-4 flex items-center space-x-3 transition-colors ${selectedFolder === folder ? 'bg-white/10 text-white' : 'text-zinc-400 hover:bg-white/5 hover:text-white'}`}
+            >
+              <Folder className="w-4 h-4" />
+              <span className="font-cute text-sm tracking-wider pt-0.5 uppercase">{folder}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* 사이드바 백그라운드 클릭 오버레이 */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm transition-opacity animate-[cinematicEntrance_0.3s_ease-out]" 
+          onClick={() => setIsSidebarOpen(false)} 
+        />
+      )}
       
-      {/* 헤더 z-index 40 유지, 체크박스는 아래에서 z-30으로 설정하여 헤더 위로 스크롤되지 않도록 해결 */}
+      {/* 헤더 */}
       <header className="sticky top-0 z-40 bg-black/80 backdrop-blur-xl border-b border-white/10 px-6 py-5 flex justify-between items-center transition-all">
         <div className="flex items-center space-x-4">
+          {folders.length > 0 && (
+            <button onClick={() => setIsSidebarOpen(true)} className="p-1.5 -ml-2 text-zinc-400 hover:text-white transition-colors">
+              <Menu className="w-6 h-6" />
+            </button>
+          )}
           <PawPrint className="text-white w-8 h-8" strokeWidth={1.5} />
           <h1 className="text-2xl font-cute font-bold tracking-tighter uppercase hidden sm:block">GGURUK</h1>
         </div>
@@ -916,11 +1036,13 @@ export default function App() {
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 space-y-6 md:space-y-0">
           <div>
             <h2 className="text-4xl md:text-5xl font-cute font-bold mb-4 tracking-tighter uppercase">GGURUK</h2>
-            <p className="text-zinc-400 font-serif-kr font-light text-lg">우리가 함께한 반짝이는 순간들</p>
+            <p className="text-zinc-400 font-serif-kr font-light text-lg">
+              {selectedFolder ? `${selectedFolder}` : '우리가 함께한 반짝이는 순간들'}
+            </p>
           </div>
         </div>
         
-        {photos.length === 0 ? (
+        {displayPhotos.length === 0 ? (
           <div className="pt-20 pb-40 flex flex-col items-center justify-center">
             <button 
               onClick={() => fileInputRef.current?.click()}
@@ -937,7 +1059,7 @@ export default function App() {
           </div>
         ) : (
           <div className="masonry-container">
-            {photos.map((photo) => (
+            {displayPhotos.map((photo) => (
               <div 
                 key={photo.id} 
                 data-id={photo.id}
@@ -951,9 +1073,13 @@ export default function App() {
                 onMouseLeave={handlePressCancel}
                 onClick={(e) => handleClick(e, photo)}
                 onContextMenu={(e) => { e.preventDefault(); return false; }} 
+                // 시네마틱 드롭 타겟 표시: 그룹 묶기(emerald) vs 순서 바꾸기(white)
                 className={`masonry-item relative group cursor-pointer overflow-hidden rounded-2xl bg-zinc-900 shadow-[0_20px_40px_rgba(0,0,0,0.9),0_5px_15px_rgba(0,0,0,0.8)] transition-all duration-500 ease-out transform-gpu
                   ${draggedPhotoId === photo.id ? 'opacity-70 scale-[0.97]' : ''}
-                  ${targetPhotoId === photo.id && draggedPhotoId !== photo.id ? 'ring-4 ring-white z-40' : ''}
+                  ${targetPhotoId === photo.id && draggedPhotoId !== photo.id 
+                      ? (targetActionType === 'group' ? 'ring-4 ring-emerald-400/80 scale-105 shadow-[0_0_40px_rgba(52,211,113,0.3)] z-40' : 'ring-4 ring-white z-40') 
+                      : ''
+                  }
                 `}
               >
                 {/* 에폭시 코팅 1: 가장자리 찌꺼기 완벽 제거를 위한 1px 이너 섀도우 포함, 깊은 입체감 */}
@@ -1026,6 +1152,45 @@ export default function App() {
         </div>
       )}
 
+      {/* 새 앨범 묶기(그룹) 커스텀 모달 */}
+      {groupModalState && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm mx-4 animate-[slideUpFade_0.3s_ease-out]">
+            <FolderOpen className="w-8 h-8 text-white/80 mx-auto mb-4" />
+            <h3 className="text-sm text-white font-serif-kr text-center font-light mb-8 tracking-[0.2em]">새 앨범으로 묶기</h3>
+            <form onSubmit={handleCreateGroup} className="space-y-6">
+              <div>
+                <input 
+                  type="text" 
+                  autoFocus
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  className="w-full bg-zinc-900/80 border border-zinc-700 text-white rounded-xl px-4 py-4 outline-none focus:border-emerald-500/80 focus:ring-1 focus:ring-emerald-500/50 transition-all placeholder:text-zinc-500 font-serif-kr text-sm text-center tracking-widest"
+                  placeholder="앨범 이름 (예: 제주도 여행)"
+                  required
+                />
+              </div>
+              <div className="flex justify-center space-x-3">
+                <button
+                  type="button"
+                  onClick={() => { setGroupModalState(null); setNewFolderName(''); }}
+                  className="flex-1 px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-xs tracking-[0.3em] uppercase"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newFolderName.trim()}
+                  className="flex-1 px-4 py-3 rounded-xl bg-white text-black font-montserrat font-bold hover:bg-zinc-200 transition-colors text-xs tracking-[0.3em] uppercase disabled:opacity-50"
+                >
+                  Create
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* 뷰어 삭제 전용 커스텀 모달 */}
       {viewerDeleteTarget && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
@@ -1077,7 +1242,50 @@ export default function App() {
         </div>
       )}
 
-      {/* 시네마틱 이미지 뷰어 (원본 다운로드 기능이 적용된 상태) */}
+      {/* 뷰어 내 앨범 이동 커스텀 모달 */}
+      {isMoveFolderModalOpen && selectedPhoto && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="bg-[#111111] border border-zinc-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm mx-4 animate-[slideUpFade_0.3s_ease-out]">
+            <FolderPlus className="w-8 h-8 text-white/80 mx-auto mb-4" />
+            <h3 className="text-sm text-white font-serif-kr text-center font-light mb-6 tracking-[0.2em]">앨범으로 이동</h3>
+            
+            <div className="max-h-48 overflow-y-auto mb-6 space-y-2 pr-2 scrollbar-hide">
+              {folders.length === 0 ? (
+                <p className="text-zinc-500 text-xs text-center font-serif-kr py-4">생성된 앨범이 없습니다.</p>
+              ) : (
+                folders.map(folder => (
+                  <button
+                    key={folder}
+                    onClick={async () => {
+                      try {
+                        await updateDoc(doc(db, 'photos', selectedPhoto.id), { folderName: folder });
+                        showToast(`'${folder}' 앨범으로 이동되었습니다.`);
+                        setIsMoveFolderModalOpen(false);
+                      } catch(error) {
+                        showToast('이동 중 오류가 발생했습니다.');
+                      }
+                    }}
+                    className="w-full text-left px-4 py-3 rounded-xl border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 hover:border-zinc-700 transition-colors font-cute text-sm tracking-wider uppercase"
+                  >
+                    {folder}
+                  </button>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-center">
+              <button
+                onClick={() => setIsMoveFolderModalOpen(false)}
+                className="w-full px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-montserrat text-xs tracking-[0.3em] uppercase"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 시네마틱 이미지 뷰어 */}
       {selectedPhoto && (
         <div className="fixed inset-0 z-[200] flex flex-col bg-black/95 backdrop-blur-3xl animate-[cinematicEntrance_0.4s_ease-out]">
           
@@ -1086,6 +1294,12 @@ export default function App() {
               {new Date(selectedPhoto.createdAt).toLocaleString()}
             </p>
             <div className="flex items-center space-x-3 md:space-x-4">
+              <button 
+                onClick={() => setIsMoveFolderModalOpen(true)} 
+                className="p-2.5 md:p-3 text-zinc-300 hover:text-white transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
+              >
+                <FolderPlus className="w-4 h-4 md:w-5 md:h-5" />
+              </button>
               <button 
                 onClick={(e) => handleDownloadOriginal(e, selectedPhoto)} 
                 className="p-2.5 md:p-3 text-zinc-300 hover:text-white transition-colors bg-white/10 rounded-full backdrop-blur-md hover:bg-white/20"
